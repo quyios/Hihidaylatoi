@@ -90,16 +90,11 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 // ---- Hook: intercept the REAL BackupList.restoreApp: call ----
 // This captures the app proxy and progress block used in normal restore flow
 static void adm_interceptRestore(id self, SEL _cmd, id appArg, NSString *path, id progress, id completion) {
-    // Store the real args for A-Z replay
+    // Silently capture args — no UI here to avoid conflict with restore flow
     gLastRestoreTarget = self;
     gLastAppArg        = appArg;
     gLastProgressBlk   = progress;
-
-    popup(@"ADM Captured! ✓", [NSString stringWithFormat:
-        @"Intercepted real restore!\narg0: [%@]\npath: %@\n\nA-Z button ready!",
-        NSStringFromClass([appArg class]), path.lastPathComponent]);
-
-    // Call original to restore normally
+    // Call original normally
     if (gOrigRestoreApp) gOrigRestoreApp(self, _cmd, appArg, path, progress, completion);
 }
 
