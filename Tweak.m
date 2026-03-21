@@ -64,15 +64,17 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 static BOOL dismissSheetInView(UIView *view) {
     if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
         UIActionSheet *sheet = (UIActionSheet *)view;
-        // Nil delegate BEFORE dismiss → prevents delegate callbacks that freeze UI
+        // Use button index 3 (Restore AppData), NOT cancel — cancel handler conflicts with restore
+        // delegate = nil ensures NO delegate callbacks fire at all
         sheet.delegate = nil;
-        [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
+        [sheet dismissWithClickedButtonIndex:3 animated:NO];
         return YES;
     }
     for (UIView *sub in view.subviews.copy)
         if (dismissSheetInView(sub)) return YES;
     return NO;
 }
+
 
 static void dismissActionSheet(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
