@@ -76,24 +76,7 @@ static void showDebug(NSString *msg) {
 
 
 static void dismissActionSheet(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-
-        for (UIWindow *win in UIApplication.sharedApplication.windows) {
-            for (UIView *view in win.subviews) {
-
-                if ([view isKindOfClass:NSClassFromString(@"UIActionSheet")]) {
-                    showDebug(@"Dismiss từ UIActionSheet");
-                    
-                    UIActionSheet *sheet = (UIActionSheet *)view;
-                    [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
-                    return;
-                }
-
-            }
-        }
-
-        // Nếu không thấy UIActionSheet
-        showDebug(@"Dismiss từ ViewController");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 
         UIWindow *kw = UIApplication.sharedApplication.keyWindow;
         UIViewController *top = kw.rootViewController;
@@ -101,8 +84,19 @@ static void dismissActionSheet(void) {
         while (top.presentedViewController)
             top = top.presentedViewController;
 
-        [top dismissViewControllerAnimated:NO completion:nil];
+        // ✅ Chỉ dismiss nếu là alert/action sheet
+        if ([top isKindOfClass:NSClassFromString(@"UIAlertController")]) {
+            UIAlertController *ac = (UIAlertController *)top;
 
+            // Debug
+            NSLog(@"[ADM] Dismiss UIAlertController style: %ld", (long)ac.preferredStyle);
+
+            [ac dismissViewControllerAnimated:NO completion:nil];
+            return;
+        }
+
+        // ❌ Không phải alert → KHÔNG làm gì
+        NSLog(@"[ADM] Skip dismiss - not alert");
     });
 }
 
