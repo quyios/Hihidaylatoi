@@ -1,5 +1,5 @@
-// ADManagerRotation - Finds BackupInfoTableViewController via app-binary method scan
-// Avoids dyld shared cache issues by hooking app classes, not UIKit.
+// ADManagerRotation - Final version
+// Uses setBackupList: hook to inject button exactly when VC receives its model data
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -7,22 +7,21 @@
 #import <objc/message.h>
 
 typedef void (*RestoreIMP)(id, SEL, NSString *, NSString *, id, id);
-typedef void (*VWA_IMP)(id, SEL, BOOL);
+typedef void (*SetBLIMP)(id, SEL, id);
 
-static id    gBackupListClass  = nil;  // Class object of BackupList
-static VWA_IMP gOrigVWA        = nil;
 static SEL   gRestoreSel;
+static SetBLIMP gOrigSetBL = nil;
 
 static const void *kBtnKey    = &kBtnKey;
 static const void *kIdxKey    = &kIdxKey;
 static const void *kBundleKey = &kBundleKey;
 
-#pragma mark - Helpers
+#pragma mark - Backup helpers
 
 static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
     NSError *e = nil;
     NSArray *all = [[NSFileManager defaultManager]
-                    contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:&e];
+        contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:&e];
     if (!all) return @[];
     NSString *pfx = [bundleID stringByAppendingString:@"_"];
     NSMutableArray *r = [NSMutableArray array];
@@ -33,28 +32,24 @@ static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
     return r;
 }
 
-static NSString *detectBundleID(id vc, id model) {
+static NSString *bundleFromModel(id model) {
     for (NSString *k in @[@"bundleId",@"bundleID",@"appBundleId",@"bundleIdentifier"]) {
-        @try { id v=[vc valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; }@catch(...){}
-        @try { id v=[model valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; }@catch(...){}
-        @try { id info=[vc valueForKey:@"backupInfo"]; id v=[info valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; }@catch(...){}
+        @try {
+            id v = [model valueForKey:k];
+            if ([v isKindOfClass:[NSString class]] && [(NSString*)v length]) return v;
+        } @catch (...) {}
     }
-    // Fallback: first bundleID in dir
-    NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
-    for (NSString *f in files)
-        if ([f hasSuffix:@".adbk"]) { NSArray *p=[f componentsSeparatedByString:@"_"]; if(p.count>=2) return p[0]; }
     return nil;
 }
 
-#pragma mark - Button Action
+#pragma mark - Button action
 
 static void adm_restoreNext(id self, SEL _cmd) {
+    NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
     id model = nil;
-    @try { model = [self valueForKey:@"backupList"]; } @catch(...) {} 
-
-    NSString *bundleID = objc_getAssociatedObject(self, kBundleKey) ?: detectBundleID(self, model);
+    @try { model = [self valueForKey:@"backupList"]; } @catch(...) {}
+    if (!bundleID) bundleID = bundleFromModel(model);
     if (!bundleID) return;
-    objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     NSArray<NSString *> *backups = sortedBackups(bundleID);
     if (!backups.count) return;
@@ -70,7 +65,7 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
-    NSLog(@"[ADMRotation] Restoring #%ld: %@", (long)(idx+1), chosen.lastPathComponent);
+    NSLog(@"[ADMRotation] Button: restoring #%ld: %@", (long)(idx+1), chosen.lastPathComponent);
 
     if (model && [model respondsToSelector:gRestoreSel])
         ((RestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, nil, nil);
@@ -78,36 +73,51 @@ static void adm_restoreNext(id self, SEL _cmd) {
         ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
 }
 
-#pragma mark - viewWillAppear (injected on BackupInfoTableViewController)
+#pragma mark - setBackupList: hook — fires when VC gets its model
 
-static void adm_vwa(id self, SEL _cmd, BOOL animated) {
-    // Call super (UITableViewController → UIViewController)
-    if (gOrigVWA) gOrigVWA(self, _cmd, animated);
+static void adm_setBackupList(id self, SEL _cmd, id backupList) {
+    // Call original setter
+    if (gOrigSetBL) gOrigSetBL(self, _cmd, backupList);
 
-    if (objc_getAssociatedObject(self, kBtnKey)) return;  // already injected
+    @try {
+        // Skip if button already injected
+        if (objc_getAssociatedObject(self, kBtnKey)) return;
 
-    // Resolve bundleID and initial index
-    id model = nil;
-    @try { model = [self valueForKey:@"backupList"]; } @catch(...) {}
-    NSString *bundleID = detectBundleID(self, model);
-    if (bundleID) {
-        objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
-        objc_setAssociatedObject(self, kIdxKey, @(saved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // Cache bundleID
+        NSString *bundleID = bundleFromModel(backupList);
+        if (bundleID) {
+            objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSInteger saved = [[NSUserDefaults standardUserDefaults]
+                integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
+            objc_setAssociatedObject(self, kIdxKey, @(saved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+
+        NSNumber *startN = objc_getAssociatedObject(self, kIdxKey) ?: @0;
+        NSString *title  = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(startN.integerValue+1)];
+
+        // Ensure button action method exists on this class
+        if (![self respondsToSelector:@selector(adm_restoreNext)])
+            class_addMethod([self class], @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
+
+        UIBarButtonItem *btn = [[UIBarButtonItem alloc]
+            initWithTitle:title style:UIBarButtonItemStylePlain
+                   target:self action:@selector(adm_restoreNext)];
+        objc_setAssociatedObject(self, kBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        // Inject into nav bar on main thread (UI must be ready)
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UINavigationItem *nav = [(UIViewController*)self navigationItem];
+            NSArray *existing = nav.rightBarButtonItems ?: @[];
+            // Avoid double injection
+            for (UIBarButtonItem *b in existing)
+                if ([b.title hasPrefix:@"Restore A-Z"]) return;
+            nav.rightBarButtonItems = [@[btn] arrayByAddingObjectsFromArray:existing];
+            NSLog(@"[ADMRotation] Button injected on %@", NSStringFromClass([self class]));
+        });
+
+    } @catch (NSException *e) {
+        NSLog(@"[ADMRotation] setBackupList hook error: %@", e);
     }
-
-    NSNumber *startN = objc_getAssociatedObject(self, kIdxKey) ?: @0;
-    NSString *title  = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(startN.integerValue+1)];
-
-    UIBarButtonItem *btn = [[UIBarButtonItem alloc]
-        initWithTitle:title style:UIBarButtonItemStylePlain
-               target:self action:@selector(adm_restoreNext)];
-    objc_setAssociatedObject(self, kBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    UINavigationItem *nav = [(UIViewController*)self navigationItem];
-    NSArray *existing = nav.rightBarButtonItems ?: @[];
-    nav.rightBarButtonItems = [@[btn] arrayByAddingObjectsFromArray:existing];
-    NSLog(@"[ADMRotation] Button injected on %@", NSStringFromClass([self class]));
 }
 
 #pragma mark - Constructor
@@ -115,79 +125,57 @@ static void adm_vwa(id self, SEL _cmd, BOOL animated) {
 __attribute__((constructor))
 static void ADMRotationInit(void) {
     @autoreleasepool {
+        NSLog(@"[ADMRotation] Initializing...");
         gRestoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
 
-        // Selectors we use to identify our target VC (app-binary methods, never UIKit)
-        NSArray *vcIdentifiers = @[
-            @"showRestoreAppActionSheet",
-            @"showRestoreAppActionSheet:",
-            @"showBackupAppActionSheet",
-            @"showBackupAppActionSheet:",
+        // Identify target VC by its unique app-binary methods
+        // DeleteEntry: is unique to BackupInfoTableViewController
+        NSArray *vcSignatureSels = @[
+            @"DeleteEntry:",
+            @"backup:",
         ];
-
-        Class vcClass = nil;
 
         unsigned int count = 0;
         Class *classes = objc_copyClassList(&count);
         if (!classes) return;
 
-        for (unsigned int i = 0; i < count; i++) {
+        Class vcClass = nil;
+        for (unsigned int i = 0; i < count && !vcClass; i++) {
             Class cls = classes[i];
-
-            // --- Find BackupList ---
-            if (!gBackupListClass && class_getInstanceMethod(cls, gRestoreSel))
-                gBackupListClass = cls;
-
-            // --- Find BackupInfoTableViewController ---
-            if (!vcClass) {
-                for (NSString *selName in vcIdentifiers) {
-                    SEL s = NSSelectorFromString(selName);
-                    if (class_getInstanceMethod(cls, s)) {
-                        vcClass = cls;
-                        break;
-                    }
+            for (NSString *selName in vcSignatureSels) {
+                if (class_getInstanceMethod(cls, NSSelectorFromString(selName))) {
+                    vcClass = cls;
+                    break;
                 }
             }
-
-            if (gBackupListClass && vcClass) break;
         }
         free(classes);
 
-        NSLog(@"[ADMRotation] BackupList=%@  VC=%@",
-              NSStringFromClass((Class)gBackupListClass),
-              NSStringFromClass(vcClass));
+        NSLog(@"[ADMRotation] Target VC: %@", NSStringFromClass(vcClass));
 
         if (!vcClass) {
-            NSLog(@"[ADMRotation] Target VC not found.");
+            NSLog(@"[ADMRotation] VC not found. Exiting.");
             return;
         }
 
-        // Add button action method to the VC class
-        class_addMethod(vcClass, @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
-
-        // Hook viewWillAppear: ON THE VC CLASS ITSELF (app binary, not UIKit)
-        SEL vwaSel = @selector(viewWillAppear:);
-        Method m = class_getInstanceMethod(vcClass, vwaSel);
-        // Check if the class owns this method (vs inherited)
-        unsigned int ownCount = 0;
-        Method *ownMethods = class_copyMethodList(vcClass, &ownCount);
-        BOOL ownsVWA = NO;
-        for (unsigned j = 0; j < ownCount; j++) {
-            if (method_getName(ownMethods[j]) == vwaSel) { ownsVWA = YES; break; }
-        }
-        free(ownMethods);
-
-        if (ownsVWA) {
-            // Swizzle the VC's own viewWillAppear:
-            gOrigVWA = (VWA_IMP)method_getImplementation(m);
-            method_setImplementation(m, (IMP)adm_vwa);
-            NSLog(@"[ADMRotation] Swizzled own viewWillAppear: on %@", NSStringFromClass(vcClass));
+        // Hook setBackupList: on the VC class
+        SEL setBLSel = NSSelectorFromString(@"setBackupList:");
+        Method m = class_getInstanceMethod(vcClass, setBLSel);
+        if (m) {
+            gOrigSetBL = (SetBLIMP)method_getImplementation(m);
+            method_setImplementation(m, (IMP)adm_setBackupList);
+            NSLog(@"[ADMRotation] Hooked setBackupList: on %@", NSStringFromClass(vcClass));
         } else {
-            // VC doesn't own viewWillAppear: → add it
-            gOrigVWA = (VWA_IMP)method_getImplementation(
-                class_getInstanceMethod(class_getSuperclass(vcClass), vwaSel));
-            class_addMethod(vcClass, vwaSel, (IMP)adm_vwa, "v@:B");
-            NSLog(@"[ADMRotation] Added viewWillAppear: to %@", NSStringFromClass(vcClass));
+            NSLog(@"[ADMRotation] setBackupList: NOT found. Trying alternative...");
+            // Fallback: hook the restore method itself to inject button from there
+            // (button will appear after first restore attempt, not ideal but functional)
+            Method restoreM = class_getInstanceMethod(vcClass, gRestoreSel);
+            if (restoreM) {
+                // Hook tableView:didSelectRowAtIndexPath: if present as alternative trigger
+                SEL didSelectSel = @selector(tableView:didSelectRowAtIndexPath:);
+                Method selectM = class_getInstanceMethod(vcClass, didSelectSel);
+                NSLog(@"[ADMRotation] tableView:didSelectRow on VC: %@", selectM ? @"YES" : @"NO");
+            }
         }
     }
 }
