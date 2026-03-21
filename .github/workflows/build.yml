@@ -21,10 +21,7 @@ jobs:
         
     - name: Set up iOS SDK
       run: |
-        mkdir -p $THEOS/sdks
-        curl -L https://github.com/theos/sdks/raw/master/iPhoneOS14.5.sdk.tar.xz -o sdk.tar.xz
-        tar -xf sdk.tar.xz -C $THEOS/sdks
-        rm sdk.tar.xz
+        git clone --depth 1 https://github.com/theos/sdks.git $THEOS/sdks
 
     - name: Build Tweak
       run: |
