@@ -26,7 +26,7 @@ fi
 
 # Inject the dylib into the binary
 # We use @executable_path to ensure it loads from the same folder
-./insert_dylib --append --all-yes "@executable_path/$DYLIB_NAME" "$BINARY_PATH"
+./insert_dylib --inplace --all-yes "@executable_path/$DYLIB_NAME" "$BINARY_PATH"
 
 echo "Copying dylib into app bundle..."
 cp "$DYLIB_NAME" "Payload/ADManager.app/"
