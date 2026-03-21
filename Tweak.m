@@ -63,9 +63,10 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 // ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
 static BOOL dismissSheetInView(UIView *view) {
     if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
-        // Remove the container (superview) to clear sheet + background overlay
-        UIView *container = view.superview ?: view;
-        [container removeFromSuperview];
+        UIActionSheet *sheet = (UIActionSheet *)view;
+        // Nil delegate BEFORE dismiss → prevents delegate callbacks that freeze UI
+        sheet.delegate = nil;
+        [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
         return YES;
     }
     for (UIView *sub in view.subviews.copy)
@@ -73,15 +74,17 @@ static BOOL dismissSheetInView(UIView *view) {
     return NO;
 }
 
-
 static void dismissActionSheet(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         for (UIWindow *win in UIApplication.sharedApplication.windows)
             if (dismissSheetInView(win)) return;
+        // Fallback
+        UIWindow *kw = UIApplication.sharedApplication.keyWindow;
+        UIViewController *top = kw.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
+        [top dismissViewControllerAnimated:YES completion:nil];
     });
 }
-
-
 
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
@@ -129,12 +132,11 @@ static void adm_restoreNext(id self, SEL _cmd) {
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Call restore after action sheet is set up
+    // Call restore after action sheet is set up, then dismiss sheet silently
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         SEL restoreSel = NSSelectorFromString(@"restore");
         if ([(id)self respondsToSelector:restoreSel])
             ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
-        // Dismiss the action sheet silently
         dismissActionSheet();
     });
 }
