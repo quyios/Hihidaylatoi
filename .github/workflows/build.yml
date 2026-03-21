@@ -27,7 +27,10 @@ jobs:
     - name: Build Tweak
       run: |
         make -j$(sysctl -n hw.ncpu)
-        cp ".theos/obj/$(grep 'TWEAK_NAME =' Makefile | cut -d' ' -f3).dylib" ./ADManagerRotation.dylib 2>/dev/null || cp ".theos/obj/debug/ADManagerRotation.dylib" ./ADManagerRotation.dylib
+        TWEAK_BINARY=$(grep 'TWEAK_NAME =' Makefile | cut -d' ' -f3).dylib
+        cp ".theos/obj/$TWEAK_BINARY" ./ADManagerRotation.dylib 2>/dev/null || cp ".theos/obj/debug/$TWEAK_BINARY" ./ADManagerRotation.dylib
+        # Sign the dylib using macOS native codesign (more reliable than ldid here)
+        codesign -s - --force ADManagerRotation.dylib
 
     - name: Patch IPA
       run: |
