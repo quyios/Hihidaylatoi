@@ -3,22 +3,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-// ---- Type aliases ----
 typedef UITableViewCell *(*CellForRowIMP)(id, SEL, UITableView *, NSIndexPath *);
-typedef void (*RealRestoreIMP)(id, SEL, id, NSString *, id, id);
+static CellForRowIMP gOrigCellForRow = nil;
 
-static CellForRowIMP  gOrigCellForRow  = nil;
-static RealRestoreIMP gOrigRestoreApp  = nil;
-
-// Captured from the last real restore invocation
-static id        gLastRestoreTarget  = nil;
-static id        gLastAppArg         = nil;
-static id        gLastProgressBlk    = nil;
-static id        gLastCompletionBlk  = nil;
-static NSString *gCapturedInfo       = nil;  // diagnostic info string
-static SEL       gRestoreSel;
-
-// For button injection
 static const void *kBtnKey    = &kBtnKey;
 static const void *kIdxKey    = &kIdxKey;
 static const void *kBundleKey = &kBundleKey;
@@ -53,7 +40,6 @@ static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
 
 // ---- Bundle ID finder ----
 static NSString *findBundleID(id vc, UITableView *tv) {
-    // Try _bInfo dict count vs directory count
     @try {
         id bInfo = [vc valueForKey:@"bInfo"];
         if ([bInfo isKindOfClass:[NSDictionary class]]) {
@@ -72,7 +58,6 @@ static NSString *findBundleID(id vc, UITableView *tv) {
             }
         }
     } @catch (...) {}
-    // Per-section fallback
     if (tv) {
         NSArray *files = [[NSFileManager defaultManager]
                           contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
@@ -89,49 +74,20 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
-// ---- Hook: intercept the REAL BackupList.restoreApp: call ----
-// This captures the app proxy and progress block used in normal restore flow
-static void adm_interceptRestore(id self, SEL _cmd, id appArg, NSString *path, id progress, id completion) {
-    gLastRestoreTarget  = self;
-    gLastAppArg         = appArg;
-    gLastProgressBlk    = progress;
-    gLastCompletionBlk  = completion;
-    // Store captured info (for A-Z diagnostic) — no UI here
-    gCapturedInfo = [NSString stringWithFormat:
-        @"appArg:[%@] progress:[%@] completion:[%@]",
-        NSStringFromClass([appArg class]) ?: @"nil",
-        (progress ? @"YES" : @"nil"),
-        (completion ? @"YES" : @"nil")];
-    if (gOrigRestoreApp) gOrigRestoreApp(self, _cmd, appArg, path, progress, completion);
-}
-
-// ---- Button tap: A-Z rotation using captured args ----
+// ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
     NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
-    if (!bundleID) { popup(@"ADM ✗", @"No bundleID cached."); return; }
-
-    if (!gLastRestoreTarget || !gLastAppArg) {
-        popup(@"ADM ✗", @"Chưa có lần restore nào!\n\nHãy TAP vào 1 backup bất kỳ \u2192 Restore 1 lần trước.");
-        return;
-    }
-
-    // First tap: show diagnostic info
-    if (gCapturedInfo) {
-        NSString *info = gCapturedInfo;
-        gCapturedInfo = nil;
-        popup(@"ADM Ready ✓", [NSString stringWithFormat:@"Captured OK!\n%@\n\nNhấn A-Z lần nữa để restore.", info]);
-        return;
-    }
+    if (!bundleID) { popup(@"ADM ✗", @"No bundleID."); return; }
 
     NSArray<NSString *> *backups = sortedBackups(bundleID);
-    if (!backups.count) { popup(@"ADM ✗", @"Không có backup!"); return; }
+    if (!backups.count) { popup(@"ADM ✗", @"No backups!"); return; }
 
     NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
-    NSInteger idx  = idxN ? idxN.integerValue : 0;
+    NSInteger idx = idxN ? idxN.integerValue : 0;
     if (idx >= (NSInteger)backups.count) idx = 0;
 
     NSString *chosen = backups[(NSUInteger)idx];
-    NSInteger next   = (idx + 1) % (NSInteger)backups.count;
+    NSInteger next = (idx + 1) % (NSInteger)backups.count;
     objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
     [[NSUserDefaults standardUserDefaults] synchronize];
@@ -139,24 +95,55 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
-    popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
-        (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
+    // Set selectedBackup on the VC (the VC uses this internally for restore)
+    @try { [self setValue:chosen forKey:@"selectedBackup"]; } @catch (...) {}
 
-    // Use NSInvocation for type-safe call
-    NSMethodSignature *sig = [gLastRestoreTarget methodSignatureForSelector:gRestoreSel];
-    if (!sig) { popup(@"ADM ✗", @"No method signature!"); return; }
-    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-    [inv setTarget:gLastRestoreTarget];
-    [inv setSelector:gRestoreSel];
-    [inv setArgument:&gLastAppArg        atIndex:2];  // ApplicationItem
-    [inv setArgument:&chosen             atIndex:3];  // backup path
-    [inv setArgument:&gLastProgressBlk   atIndex:4];  // original progress block (not nil!)
-    [inv setArgument:&gLastCompletionBlk atIndex:5];  // original completion block
-    [inv invoke];
+    // Ask VC to show its own restore action sheet — uses its own internal logic
+    SEL showSel = NSSelectorFromString(@"showRestoreAppActionSheet");
+    if (![self respondsToSelector:showSel]) {
+        popup(@"ADM ✗", @"showRestoreAppActionSheet not found!\nCheck method name.");
+        return;
+    }
+    ((void(*)(id,SEL))objc_msgSend)(self, showSel);
 
+    // Auto-confirm the action sheet by invoking the non-cancel action's handler
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIViewController *top = (UIViewController *)self;
+        while (top.presentedViewController) top = top.presentedViewController;
+        if (![top isKindOfClass:[UIAlertController class]]) {
+            popup(@"ADM ✗", [NSString stringWithFormat:@"showRestoreAppActionSheet OK\nbut no UIAlertController found!\nclass: %@", NSStringFromClass([top class])]);
+            return;
+        }
+        UIAlertController *ac = (UIAlertController *)top;
+        // Log all action titles for debugging (first time only)
+        NSMutableString *titles = [NSMutableString string];
+        UIAlertAction *restoreAction = nil;
+        for (UIAlertAction *action in ac.actions) {
+            [titles appendFormat:@"[%@] ", action.title];
+            if (action.style != UIAlertActionStyleCancel && !restoreAction) restoreAction = action;
+        }
+
+        if (!restoreAction) {
+            popup(@"ADM ✗", [NSString stringWithFormat:@"No restore action!\nActions: %@", titles]);
+            return;
+        }
+
+        // Invoke action handler
+        void (^handler)(UIAlertAction *) = nil;
+        @try { handler = [restoreAction valueForKey:@"handler"]; } @catch (...) {}
+        if (handler) {
+            [top dismissViewControllerAnimated:NO completion:^{
+                handler(restoreAction);
+                popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
+                    (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
+            }];
+        } else {
+            popup(@"ADM ✗", [NSString stringWithFormat:@"No handler for action!\nActions: %@", titles]);
+        }
+    });
 }
 
-// ---- Button injection ----
+// ---- Inject button ----
 static void injectButton(id self, UITableView *tv) {
     if (objc_getAssociatedObject(self, kBtnKey)) return;
     NSString *bundleID = findBundleID(self, tv);
@@ -193,9 +180,6 @@ static UITableViewCell *adm_cellForRow(id self, SEL _cmd, UITableView *tv, NSInd
 __attribute__((constructor))
 static void ADMRotationInit(void) {
     @autoreleasepool {
-        gRestoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
-
-        // Find BackupInfoTableViewController
         Class vcClass = NSClassFromString(@"BackupInfoTableViewController");
         if (!vcClass) {
             unsigned int c = 0; Class *cls = objc_copyClassList(&c);
@@ -205,23 +189,10 @@ static void ADMRotationInit(void) {
                     { vcClass = cls[i]; break; }
             free(cls);
         }
-
-        // Find BackupList and hook restoreApp:
-        Class blClass = NSClassFromString(@"BackupList");
-
-        if (vcClass) {
-            class_addMethod(vcClass, @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
-            Method m = class_getInstanceMethod(vcClass, @selector(tableView:cellForRowAtIndexPath:));
-            if (m) { gOrigCellForRow = (CellForRowIMP)method_getImplementation(m); method_setImplementation(m, (IMP)adm_cellForRow); }
-        }
-
-        if (blClass) {
-            Method rm = class_getInstanceMethod(blClass, gRestoreSel);
-            if (rm) {
-                gOrigRestoreApp = (RealRestoreIMP)method_getImplementation(rm);
-                method_setImplementation(rm, (IMP)adm_interceptRestore);
-            }
-        }
+        if (!vcClass) return;
+        class_addMethod(vcClass, @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
+        Method m = class_getInstanceMethod(vcClass, @selector(tableView:cellForRowAtIndexPath:));
+        if (m) { gOrigCellForRow = (CellForRowIMP)method_getImplementation(m); method_setImplementation(m, (IMP)adm_cellForRow); }
     }
 }
 
