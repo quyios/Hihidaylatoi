@@ -117,12 +117,17 @@ static void adm_restoreNext(id self, SEL _cmd) {
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Step 1 (t=0.4s): dismiss action sheet FIRST (before restore HUD appears)
-    // Step 2 (t=0.5s): call restore AFTER dismiss — no HUD conflict
+    // Step 1 (t=0.4s): pre-deselect row + nil delegate + dismiss (no callbacks = no freeze)
+    // Step 2 (t=0.5s): call restore with clean state
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIActionSheet *sheet = findActionSheet();
-        if (sheet) [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
-
+        if (sheet) {
+            // Pre-deselect row so cancel handler's deselect is a no-op
+            if (tv) [tv deselectRowAtIndexPath:targetIP animated:NO];
+            // Nil delegate — prevents ALL callbacks (no freeze from cancel handler)
+            sheet.delegate = nil;
+            [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             SEL restoreSel = NSSelectorFromString(@"restore");
             if ([(id)self respondsToSelector:restoreSel])
@@ -130,6 +135,7 @@ static void adm_restoreNext(id self, SEL _cmd) {
         });
     });
 }
+
 
 // ---- Inject button ----
 static void injectButton(id self, UITableView *tv) {
