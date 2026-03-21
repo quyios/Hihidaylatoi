@@ -4,7 +4,11 @@
 #import <objc/message.h>
 
 typedef UITableViewCell *(*CellForRowIMP)(id, SEL, UITableView *, NSIndexPath *);
-static CellForRowIMP gOrigCellForRow = nil;
+typedef void (*DidDismissIMP)(id, SEL, UIActionSheet *, NSInteger);
+
+static CellForRowIMP  gOrigCellForRow  = nil;
+static DidDismissIMP  gOrigDidDismiss  = nil;
+static BOOL           gIsAutoRestore   = NO;
 
 static const void *kBtnKey    = &kBtnKey;
 static const void *kIdxKey    = &kIdxKey;
@@ -60,33 +64,33 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
-// ---- Recursive UIActionSheet finder ----
-static BOOL dismissSheetInView(UIView *view) {
-    if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
-        [(UIActionSheet *)view dismissWithClickedButtonIndex:[(UIActionSheet *)view cancelButtonIndex] animated:YES];
-        return YES;
-    }
-    for (UIView *sub in view.subviews)
-        if (dismissSheetInView(sub)) return YES;
-    return NO;
-}
+// ---- Hook: actionSheet:didDismissWithButtonIndex: ----
+// Fires after ANY button tap (including our auto-dismiss)
+// We use it to re-enable interactions after auto-restore dismiss
+static void adm_actionSheetDidDismiss(id self, SEL _cmd, UIActionSheet *sheet, NSInteger buttonIdx) {
+    if (gOrigDidDismiss) gOrigDidDismiss(self, _cmd, sheet, buttonIdx);
 
-// ---- Dismiss action sheet then force-re-enable interactions ----
-static void dismissActionSheet(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        for (UIWindow *win in UIApplication.sharedApplication.windows)
-            if (dismissSheetInView(win)) break;
-        // Fix freeze: UIActionSheet may leave interaction events disabled
-        // Force-balance any beginIgnoringInteractionEvents calls
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIApplication *app = UIApplication.sharedApplication;
-            while (app.isIgnoringInteractionEvents)
-                [app endIgnoringInteractionEvents];
-            for (UIWindow *win in app.windows)
-                win.userInteractionEnabled = YES;
-        });
+    // Diagnostic popup — shows state after any button tap
+    UIApplication *app = UIApplication.sharedApplication;
+    NSMutableString *info = [NSMutableString stringWithFormat:
+        @"buttonIdx: %ld\ncancelIdx: %ld\nisIgnoring: %@\nwindows userInteraction:",
+        (long)buttonIdx, (long)sheet.cancelButtonIndex,
+        app.isIgnoringInteractionEvents ? @"YES" : @"NO"];
+    for (UIWindow *win in app.windows)
+        [info appendFormat:@"\n  %@=%@", NSStringFromClass([win class]),
+         win.userInteractionEnabled ? @"YES" : @"NO"];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *win = app.windows.firstObject;
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"ADM Cancel Debug"
+            message:info preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        UIViewController *top = win.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
+        [top presentViewController:a animated:YES completion:nil];
     });
 }
+
 
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
@@ -109,11 +113,9 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
-    // Get table view
     UITableView *tv = nil;
     @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
 
-    // Find the row for chosen backup (table: newest→oldest, our array: oldest→newest)
     NSIndexPath *targetIP = nil;
     if (tv) {
         for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
@@ -128,18 +130,38 @@ static void adm_restoreNext(id self, SEL _cmd) {
     }
     if (!targetIP) return;
 
-    // Simulate row tap → VC sets actionSheetItem with correct type + shows UIActionSheet
+    // Simulate row tap → VC sets actionSheetItem + shows UIActionSheet
     typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
     SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Call restore, then dismiss action sheet and re-enable interactions
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Set flag before dismiss — our hook will re-enable interactions
+        gIsAutoRestore = YES;
+
+        // Call restore
         SEL restoreSel = NSSelectorFromString(@"restore");
         if ([(id)self respondsToSelector:restoreSel])
             ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
-        dismissActionSheet();
+
+        // Dismiss action sheet via cancelButtonIndex
+        // Our hook adm_actionSheetDidDismiss will handle re-enabling interactions
+        for (UIWindow *win in UIApplication.sharedApplication.windows) {
+            UIView *sheet = nil;
+            NSMutableArray *q = [NSMutableArray arrayWithObject:win];
+            while (q.count) {
+                UIView *v = q.firstObject; [q removeObjectAtIndex:0];
+                if ([v respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
+                    sheet = v; break;
+                }
+                [q addObjectsFromArray:v.subviews];
+            }
+            if (sheet) {
+                [(UIActionSheet *)sheet dismissWithClickedButtonIndex:[(UIActionSheet *)sheet cancelButtonIndex] animated:YES];
+                break;
+            }
+        }
     });
 }
 
@@ -190,9 +212,16 @@ static void ADMRotationInit(void) {
             free(cls);
         }
         if (!vcClass) return;
+
+        // Hook cellForRowAtIndexPath: for button injection
         class_addMethod(vcClass, @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
         Method m = class_getInstanceMethod(vcClass, @selector(tableView:cellForRowAtIndexPath:));
         if (m) { gOrigCellForRow = (CellForRowIMP)method_getImplementation(m); method_setImplementation(m, (IMP)adm_cellForRow); }
+
+        // Hook actionSheet:didDismissWithButtonIndex: to re-enable interactions after auto-dismiss
+        SEL dismissSel = @selector(actionSheet:didDismissWithButtonIndex:);
+        Method dm = class_getInstanceMethod(vcClass, dismissSel);
+        if (dm) { gOrigDidDismiss = (DidDismissIMP)method_getImplementation(dm); method_setImplementation(dm, (IMP)adm_actionSheetDidDismiss); }
     }
 }
 
