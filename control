@@ -1,0 +1,9 @@
+Package: com.yourname.admanagerrotation
+Name: ADManager Rotation
+Depends: mobilesubstrate
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Auto-rotating backup restoration for ADManager.
+Maintainer: YourName
+Author: YourName
+Section: Tweaks
