@@ -4,11 +4,11 @@
 static NSString *const kRotationManualChoicePrefix = @"ManualChoice_";
 static NSString *const kRotationIndexPrefix = @"RotationIndex_";
 
-@interface BackupInfoTableViewController : UITableViewController
+@interface BackupList : NSObject
 - (void)restoreApp:(NSString *)bundleID fromPathBackup:(NSString *)path progress:(id)progress withCompletion:(id)completion;
 @end
 
-%hook BackupInfoTableViewController
+%hook BackupList
 
 - (void)restoreApp:(NSString *)bundleID fromPathBackup:(NSString *)path progress:(id)progress withCompletion:(id)completion {
     
@@ -85,3 +85,4 @@ static NSString *const kRotationIndexPrefix = @"RotationIndex_";
 }
 
 %end
+
