@@ -122,32 +122,39 @@ static void adm_restoreNext(id self, SEL _cmd) {
         return;
     }
 
-    // Simulate row tap → VC sets actionSheetItem + shows action sheet with correct types
+    // Simulate row tap → VC sets actionSheetItem with correct type
     typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
     SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // After a short delay: dismiss the action sheet, then call restore
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Grab and invoke the Restore action before animation starts (0.01s = invisible)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIViewController *top = (UIViewController *)self;
         while (top.presentedViewController) top = top.presentedViewController;
-        void (^doRestore)(void) = ^{
-            SEL restoreSel = NSSelectorFromString(@"restore");
-            if ([(id)self respondsToSelector:restoreSel]) {
-                popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
-                    (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
-                ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
-            } else {
-                popup(@"ADM ✗", @"restore not found");
-            }
-        };
-        if ([top isKindOfClass:[UIAlertController class]])
-            [top dismissViewControllerAnimated:NO completion:doRestore];
-        else
-            doRestore();
+        if (![top isKindOfClass:[UIAlertController class]]) return;
+        UIAlertController *ac = (UIAlertController *)top;
+        // Find "Restore" action (handles any localization)
+        UIAlertAction *restoreAction = nil;
+        for (UIAlertAction *action in ac.actions) {
+            NSString *t = action.title.lowercaseString;
+            if (action.style != UIAlertActionStyleCancel &&
+                ([t containsString:@"restore"] || [t containsString:@"khôi"]))
+                { restoreAction = action; break; }
+        }
+        // Fallback: use the LAST non-cancel action
+        if (!restoreAction)
+            for (UIAlertAction *action in ac.actions.reverseObjectEnumerator)
+                if (action.style != UIAlertActionStyleCancel) { restoreAction = action; break; }
+
+        void (^handler)(UIAlertAction *) = nil;
+        if (restoreAction) @try { handler = [restoreAction valueForKey:@"handler"]; } @catch (...) {}
+        [top dismissViewControllerAnimated:NO completion:^{
+            if (handler) handler(restoreAction);
+        }];
     });
 }
+
 
 
 
