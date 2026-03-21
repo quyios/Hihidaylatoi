@@ -73,24 +73,39 @@ static BOOL dismissSheetInView(UIView *view) {
 }
 
 static void dismissActionSheet(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // 1. Tắt UIActionSheet
-        for (UIWindow *win in UIApplication.sharedApplication.windows)
-            if (dismissSheetInView(win)) break;
-        
-        // 2. Tắt UIAlertController (nếu có hiện popup "Done")
-        UIWindow *kw = UIApplication.sharedApplication.keyWindow;
-        UIViewController *top = kw.rootViewController;
-        while (top.presentedViewController) top = top.presentedViewController;
-        [top dismissViewControllerAnimated:YES completion:nil];
-        // 3. FIX TREO MÀN: Mở khóa tương tác
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIApplication *app = [UIApplication sharedApplication];
-            while (app.isIgnoringInteractionEvents) [app endIgnoringInteractionEvents];
-            for (UIWindow *win in app.windows) win.userInteractionEnabled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIApplication *app = [UIApplication sharedApplication];
+        UIWindow *kw = app.keyWindow ?: app.windows.firstObject;
+
+        // 1. Tắt mọi UIActionSheet trong mọi window
+        for (UIWindow *win in app.windows)
+            dismissSheetInView(win);
+
+        // 2. Tắt TOÀN BỘ Modal (UIAlertController, etc.) từ root
+        [kw.rootViewController dismissViewControllerAnimated:NO completion:nil];
+
+        // 3. Force Reset tương tác ngay lập tức
+        while (app.isIgnoringInteractionEvents) [app endIgnoringInteractionEvents];
+        for (UIWindow *win in app.windows) {
+            win.userInteractionEnabled = YES;
+            // Xóa mọi view "rác" (dimming views)
+            for (UIView *v in win.subviews) {
+                NSString *cn = NSStringFromClass([v class]);
+                if ([cn containsString:@"Dimming"] || [cn containsString:@"ActionSheet"])
+                    [v removeFromSuperview];
+            }
+        }
+
+        // OPTION RESTART: Tự khởi động lại sau 5 giây để tiếp tục rotation nếu muốn
+        // Bạn có thể bỏ comment dòng dưới nếu muốn app tự reset sau khi restore xong
+        /*
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            exit(0);
         });
+        */
     });
 }
+
 
 
 // ---- A-Z button tap ----
