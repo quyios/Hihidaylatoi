@@ -201,13 +201,25 @@ static void adm_restoreNext(id self, SEL _cmd) {
     popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@\n%@\n\n%@",
         (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent, bundleID, modelInfo]);
 
-    // Call with nil for progress and completion (safe)
+    // Dummy blocks with generic `id` args — safe regardless of what the method passes to them
+    // (passing nil crashes if the method calls blocks unconditionally)
+    typedef void (^ProgressBlock)(id);
+    typedef void (^CompletionBlock)(id, id);
+    ProgressBlock   progressDummy    = ^(id p) {};
+    CompletionBlock completionDummy  = ^(id result, id error) {
+        popup(error ? @"ADM ✗ Failed" : @"ADM ✓ Done!",
+              error ? [NSString stringWithFormat:@"Error: %@", error]
+                    : [NSString stringWithFormat:@"Restored!\n%@", chosen.lastPathComponent]);
+    };
+
+    typedef void (*SafeRestoreIMP)(id, SEL, NSString *, NSString *, ProgressBlock, CompletionBlock);
+
     if (model && [model respondsToSelector:gRestoreSel]) {
-        ((RestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, nil, nil);
+        ((SafeRestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, progressDummy, completionDummy);
         return;
     }
     if ([self respondsToSelector:gRestoreSel]) {
-        ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
+        ((SafeRestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, progressDummy, completionDummy);
         return;
     }
     // Try BackupList singleton
@@ -220,12 +232,13 @@ static void adm_restoreNext(id self, SEL _cmd) {
         }
         if (!instance) instance = [[blClass alloc] init];
         if (instance && [instance respondsToSelector:gRestoreSel]) {
-            ((RestoreIMP)objc_msgSend)(instance, gRestoreSel, bundleID, chosen, nil, nil);
+            ((SafeRestoreIMP)objc_msgSend)(instance, gRestoreSel, bundleID, chosen, progressDummy, completionDummy);
             return;
         }
     }
     popup(@"ADM ✗", @"Không tìm được restore method!");
 }
+
 
 
 static void injectButton(id self, UITableView *tv) {
