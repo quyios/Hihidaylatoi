@@ -11,9 +11,10 @@ static CellForRowIMP  gOrigCellForRow  = nil;
 static RealRestoreIMP gOrigRestoreApp  = nil;
 
 // Captured from the last real restore invocation
-static id        gLastRestoreTarget = nil;  // BackupList instance
-static id        gLastAppArg        = nil;  // whatever arg restoreApp: takes as first param
-static id        gLastProgressBlk   = nil;  // progress block
+static id        gLastRestoreTarget  = nil;  // BackupList instance
+static id        gLastAppArg         = nil;  // whatever arg restoreApp: takes as first param
+static id        gLastProgressBlk    = nil;  // progress block (may be nil)
+static id        gLastCompletionBlk  = nil;  // completion block (exact type, reuse for A-Z)
 static SEL       gRestoreSel;
 
 // For button injection
@@ -90,10 +91,11 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 // ---- Hook: intercept the REAL BackupList.restoreApp: call ----
 // This captures the app proxy and progress block used in normal restore flow
 static void adm_interceptRestore(id self, SEL _cmd, id appArg, NSString *path, id progress, id completion) {
-    // Silently capture args — no UI here to avoid conflict with restore flow
-    gLastRestoreTarget = self;
-    gLastAppArg        = appArg;
-    gLastProgressBlk   = progress;
+    // Silently capture ALL args — no UI to avoid conflict with restore flow
+    gLastRestoreTarget  = self;
+    gLastAppArg         = appArg;
+    gLastProgressBlk    = progress;
+    gLastCompletionBlk  = completion; // ← capture exact completion block type
     // Call original normally
     if (gOrigRestoreApp) gOrigRestoreApp(self, _cmd, appArg, path, progress, completion);
 }
@@ -124,18 +126,11 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
-    // Replay real restore with A-Z path
-    void (^completionDummy)(id, id) = ^(id result, id error) {
-        popup(error ? @"ADM ✗ Failed" : @"ADM ✓ Done!",
-              error ? [NSString stringWithFormat:@"Error: %@", error]
-                    : [NSString stringWithFormat:@"#%ld/%lu restored!\n%@", (long)(idx+1),
-                       (unsigned long)backups.count, chosen.lastPathComponent]);
-    };
-
     popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
         (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
 
-    gOrigRestoreApp(gLastRestoreTarget, gRestoreSel, gLastAppArg, chosen, gLastProgressBlk, completionDummy);
+    // Replay with EXACT original completion block type — avoids block signature mismatch crash
+    gOrigRestoreApp(gLastRestoreTarget, gRestoreSel, gLastAppArg, chosen, gLastProgressBlk, gLastCompletionBlk);
 }
 
 // ---- Button injection ----
