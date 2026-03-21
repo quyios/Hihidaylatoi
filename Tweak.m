@@ -98,50 +98,24 @@ static void adm_restoreNext(id self, SEL _cmd) {
     // Set selectedBackup on the VC (the VC uses this internally for restore)
     @try { [self setValue:chosen forKey:@"selectedBackup"]; } @catch (...) {}
 
-    // Ask VC to show its own restore action sheet — uses its own internal logic
-    SEL showSel = NSSelectorFromString(@"showRestoreAppActionSheet");
-    if (![self respondsToSelector:showSel]) {
-        popup(@"ADM ✗", @"showRestoreAppActionSheet not found!\nCheck method name.");
-        return;
+    // Dump methods to find correct restore trigger
+    unsigned int mc = 0;
+    Method *methods = class_copyMethodList([self class], &mc);
+    NSMutableArray *found = [NSMutableArray array];
+    for (unsigned i = 0; i < mc; i++) {
+        NSString *name = NSStringFromSelector(method_getName(methods[i]));
+        NSString *lower = name.lowercaseString;
+        if ([lower containsString:@"restore"] || [lower containsString:@"action"]
+            || [lower containsString:@"sheet"] || [lower containsString:@"select"]
+            || [lower containsString:@"backup"])
+            [found addObject:name];
     }
-    ((void(*)(id,SEL))objc_msgSend)(self, showSel);
-
-    // Auto-confirm the action sheet by invoking the non-cancel action's handler
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIViewController *top = (UIViewController *)self;
-        while (top.presentedViewController) top = top.presentedViewController;
-        if (![top isKindOfClass:[UIAlertController class]]) {
-            popup(@"ADM ✗", [NSString stringWithFormat:@"showRestoreAppActionSheet OK\nbut no UIAlertController found!\nclass: %@", NSStringFromClass([top class])]);
-            return;
-        }
-        UIAlertController *ac = (UIAlertController *)top;
-        // Log all action titles for debugging (first time only)
-        NSMutableString *titles = [NSMutableString string];
-        UIAlertAction *restoreAction = nil;
-        for (UIAlertAction *action in ac.actions) {
-            [titles appendFormat:@"[%@] ", action.title];
-            if (action.style != UIAlertActionStyleCancel && !restoreAction) restoreAction = action;
-        }
-
-        if (!restoreAction) {
-            popup(@"ADM ✗", [NSString stringWithFormat:@"No restore action!\nActions: %@", titles]);
-            return;
-        }
-
-        // Invoke action handler
-        void (^handler)(UIAlertAction *) = nil;
-        @try { handler = [restoreAction valueForKey:@"handler"]; } @catch (...) {}
-        if (handler) {
-            [top dismissViewControllerAnimated:NO completion:^{
-                handler(restoreAction);
-                popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
-                    (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
-            }];
-        } else {
-            popup(@"ADM ✗", [NSString stringWithFormat:@"No handler for action!\nActions: %@", titles]);
-        }
-    });
+    free(methods);
+    popup(@"ADM VC Methods", found.count
+          ? [found componentsJoinedByString:@"\n"]
+          : @"(no matching methods)");
 }
+
 
 // ---- Inject button ----
 static void injectButton(id self, UITableView *tv) {
