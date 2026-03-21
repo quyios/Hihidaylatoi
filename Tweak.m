@@ -86,6 +86,7 @@ static void adm_restoreNext(id self, SEL _cmd) {
     NSInteger idx = idxN ? idxN.integerValue : 0;
     if (idx >= (NSInteger)backups.count) idx = 0;
 
+    NSString *chosen = backups[(NSUInteger)idx];
     NSInteger next = (idx + 1) % (NSInteger)backups.count;
     objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
@@ -111,31 +112,37 @@ static void adm_restoreNext(id self, SEL _cmd) {
     }
     if (!targetIP) return;
 
-    // Simulate row tap → VC sets actionSheetItem + shows UIActionSheet
+    // Simulate row tap → VC sets actionSheetItem with correct type + shows UIActionSheet
     typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
     SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Step 1 (t=0.4s): pre-deselect row + nil delegate + dismiss (no callbacks = no freeze)
-    // Step 2 (t=0.5s): call restore with clean state
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Flow: Dismiss first -> Reset UI -> Call restore
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIActionSheet *sheet = findActionSheet();
         if (sheet) {
-            // Pre-deselect row so cancel handler's deselect is a no-op
-            if (tv) [tv deselectRowAtIndexPath:targetIP animated:NO];
-            // Nil delegate — prevents ALL callbacks (no freeze from cancel handler)
-            sheet.delegate = nil;
             [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+
+        // Wait for dismissal cleanup, then force-reset UI interaction state
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIApplication *app = [UIApplication sharedApplication];
+            while (app.isIgnoringInteractionEvents) {
+                [app endIgnoringInteractionEvents];
+            }
+            for (UIWindow *win in app.windows) {
+                win.userInteractionEnabled = YES;
+            }
+
+            // Finally, call the actual restore logic
             SEL restoreSel = NSSelectorFromString(@"restore");
-            if ([(id)self respondsToSelector:restoreSel])
+            if ([(id)self respondsToSelector:restoreSel]) {
                 ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
+            }
         });
     });
 }
-
 
 // ---- Inject button ----
 static void injectButton(id self, UITableView *tv) {
