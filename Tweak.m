@@ -99,28 +99,46 @@ static NSString *findBundleID(id vc, id model, UITableView *tv) {
     }
     free(ivars);
 
-    // 5. Count rows vs .adbk files per bundle ID
+    // 4. Try _bInfo dict count — the VC stores bInfo = {count:N, icon:…}
+    //    N = number of backups → match against .adbk file count per bundle ID
+    @try {
+        id bInfo = [vc valueForKey:@"bInfo"];
+        if ([bInfo isKindOfClass:[NSDictionary class]]) {
+            id countVal = ((NSDictionary *)bInfo)[@"count"];
+            NSInteger bCount = [countVal integerValue];
+            if (bCount > 0) {
+                NSArray *files = [[NSFileManager defaultManager]
+                                  contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
+                NSMutableDictionary *counts = [NSMutableDictionary dictionary];
+                for (NSString *f in files) {
+                    if (![f hasSuffix:@".adbk"]) continue;
+                    NSString *bid = [[f componentsSeparatedByString:@"_"] firstObject];
+                    if (bid) counts[bid] = @([counts[bid] integerValue] + 1);
+                }
+                for (NSString *bid in counts) {
+                    if ([counts[bid] integerValue] == bCount) return bid;
+                }
+            }
+        }
+    } @catch (...) {}
+
+    // 5. Fallback: check each section separately
     if (tv) {
-        NSInteger rows = [tv numberOfRowsInSection:0];
-        if (rows > 0) {
-            NSArray *files = [[NSFileManager defaultManager]
-                              contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
-            NSMutableDictionary *counts = [NSMutableDictionary dictionary];
-            for (NSString *f in files) {
-                if (![f hasSuffix:@".adbk"]) continue;
-                NSString *bid = [[f componentsSeparatedByString:@"_"] firstObject];
-                if (bid) counts[bid] = @([counts[bid] integerValue] + 1);
-            }
-            // Show candidates popup for debugging
-            NSMutableString *dbg = [NSMutableString stringWithFormat:@"Table rows: %ld\n\n", (long)rows];
-            NSString *match = nil;
+        NSArray *files = [[NSFileManager defaultManager]
+                          contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
+        NSMutableDictionary *counts = [NSMutableDictionary dictionary];
+        for (NSString *f in files) {
+            if (![f hasSuffix:@".adbk"]) continue;
+            NSString *bid = [[f componentsSeparatedByString:@"_"] firstObject];
+            if (bid) counts[bid] = @([counts[bid] integerValue] + 1);
+        }
+        NSInteger numSections = [tv numberOfSections];
+        for (NSInteger s = 0; s < numSections; s++) {
+            NSInteger rows = [tv numberOfRowsInSection:s];
+            if (rows <= 0) continue;
             for (NSString *bid in counts) {
-                int c = [counts[bid] intValue];
-                [dbg appendFormat:@"%@ → %d%@\n", bid, c, (c == rows ? @" ← MATCH" : @"")];
-                if (c == rows && !match) match = bid;
+                if ([counts[bid] integerValue] == rows) return bid;
             }
-            popup(@"ADM Bundle Candidates", dbg);
-            if (match) return match;
         }
     }
 
