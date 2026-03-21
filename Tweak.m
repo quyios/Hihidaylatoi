@@ -10,20 +10,6 @@ static const void *kBtnKey    = &kBtnKey;
 static const void *kIdxKey    = &kIdxKey;
 static const void *kBundleKey = &kBundleKey;
 
-// ---- Popup ----
-static void popup(NSString *title, NSString *msg) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *win = UIApplication.sharedApplication.windows.firstObject;
-        if (!win.rootViewController) return;
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        UIViewController *top = win.rootViewController;
-        while (top.presentedViewController) top = top.presentedViewController;
-        [top presentViewController:a animated:YES completion:nil];
-    });
-}
-
 // ---- Sorted backup files ----
 static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
     NSArray *all = [[NSFileManager defaultManager]
@@ -74,13 +60,27 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
+// ---- Auto-dismiss UIActionSheet from window ----
+static void dismissActionSheet(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIWindow *win = UIApplication.sharedApplication.windows.firstObject;
+        for (UIView *v in win.subviews.reverseObjectEnumerator) {
+            if ([v respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
+                UIActionSheet *sheet = (UIActionSheet *)v;
+                [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
+                break;
+            }
+        }
+    });
+}
+
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
     NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
-    if (!bundleID) { popup(@"ADM ✗", @"No bundleID."); return; }
+    if (!bundleID) return;
 
     NSArray<NSString *> *backups = sortedBackups(bundleID);
-    if (!backups.count) { popup(@"ADM ✗", @"No backups!"); return; }
+    if (!backups.count) return;
 
     NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
     NSInteger idx = idxN ? idxN.integerValue : 0;
@@ -95,63 +95,40 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
-    // Set selectedBackup on the VC (the VC uses this internally for restore)
-    @try { [self setValue:chosen forKey:@"selectedBackup"]; } @catch (...) {}
-
-    // Get table view from VC
+    // Get table view
     UITableView *tv = nil;
     @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
 
-    // Find which section has the backup rows (section where rowCount == backups.count)
+    // Find the row for chosen backup (table: newest→oldest, our array: oldest→newest)
     NSIndexPath *targetIP = nil;
     if (tv) {
         for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
             NSInteger rows = [tv numberOfRowsInSection:s];
             if (rows == (NSInteger)backups.count) {
-                // Backups sorted newest→oldest in table, our array is oldest→newest
-                NSInteger rowInSection = (NSInteger)backups.count - 1 - idx;
-                if (rowInSection >= 0 && rowInSection < rows)
-                    targetIP = [NSIndexPath indexPathForRow:rowInSection inSection:s];
+                NSInteger row = (NSInteger)backups.count - 1 - idx;
+                if (row >= 0 && row < rows)
+                    targetIP = [NSIndexPath indexPathForRow:row inSection:s];
                 break;
             }
         }
     }
+    if (!targetIP) return;
 
-    if (!targetIP) {
-        popup(@"ADM ✗", [NSString stringWithFormat:@"Cannot find row for backup #%ld\nTry it manually first.", (long)(idx+1)]);
-        return;
-    }
-
-    // Simulate row tap → VC sets actionSheetItem with correct type
+    // Simulate row tap → VC sets actionSheetItem with correct type + shows UIActionSheet
     typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
     SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // UIActionSheet appears in window subviews (not presentedViewController)
-    // Dismiss with button index 3 = "Restore AppData" (Set name=0, Open=1, Filza=2, Restore=3)
-    __block int retries = 0;
-    __block void (^findAndDismiss)(void);
-    findAndDismiss = ^{
-        UIWindow *win = UIApplication.sharedApplication.windows.firstObject;
-        BOOL found = NO;
-        for (UIView *v in win.subviews.reverseObjectEnumerator) {
-            // UIActionSheet responds to dismissWithClickedButtonIndex:animated:
-            if ([v respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
-                [(UIActionSheet *)v dismissWithClickedButtonIndex:3 animated:NO];
-                found = YES; break;
-            }
-        }
-        if (!found && ++retries < 20) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), findAndDismiss);
-        }
-    };
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), findAndDismiss);
+    // Call restore after action sheet is set up
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        SEL restoreSel = NSSelectorFromString(@"restore");
+        if ([(id)self respondsToSelector:restoreSel])
+            ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
+        // Dismiss the action sheet silently
+        dismissActionSheet();
+    });
 }
-
-
 
 // ---- Inject button ----
 static void injectButton(id self, UITableView *tv) {
