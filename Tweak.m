@@ -84,24 +84,22 @@ static void dismissActionSheet(void) {
         while (top.presentedViewController)
             top = top.presentedViewController;
 
-        // ✅ Chỉ dismiss nếu là alert/action sheet
+        // ✅ Chỉ dismiss nếu là UIAlertController
         if ([top isKindOfClass:NSClassFromString(@"UIAlertController")]) {
             UIAlertController *ac = (UIAlertController *)top;
+
+            NSLog(@"[ADM] Dismiss UIAlertController style: %ld", (long)ac.preferredStyle);
 
             if (ac.preferredStyle == UIAlertControllerStyleActionSheet) {
                 [ac dismissViewControllerAnimated:NO completion:nil];
             }
-        }
 
-            // Debug
-            NSLog(@"[ADM] Dismiss UIAlertController style: %ld", (long)ac.preferredStyle);
-
-            [ac dismissViewControllerAnimated:NO completion:nil];
             return;
         }
 
-        // ❌ Không phải alert → KHÔNG làm gì
-        NSLog(@"[ADM] Skip dismiss - not alert");
+        // ❌ Không phải alert → bỏ qua
+        NSLog(@"[ADM] Top VC: %@", NSStringFromClass([top class]));
+
     });
 }
 
