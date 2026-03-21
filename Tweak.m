@@ -128,43 +128,28 @@ static void adm_restoreNext(id self, SEL _cmd) {
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Poll until action sheet is presented, then invoke Restore action invisibly
+    // UIActionSheet appears in window subviews (not presentedViewController)
+    // Dismiss with button index 3 = "Restore AppData" (Set name=0, Open=1, Filza=2, Restore=3)
     __block int retries = 0;
-    __block void (^checkAndRestore)(void);
-    checkAndRestore = ^{
-        UIViewController *top = (UIViewController *)self;
-        while (top.presentedViewController) top = top.presentedViewController;
-        if ([top isKindOfClass:[UIAlertController class]]) {
-            UIAlertController *ac = (UIAlertController *)top;
-            UIAlertAction *restoreAction = nil;
-            for (UIAlertAction *action in ac.actions) {
-                NSString *t = action.title.lowercaseString;
-                if (action.style != UIAlertActionStyleCancel &&
-                    ([t containsString:@"restore"] || [t containsString:@"khôi"]))
-                    { restoreAction = action; break; }
+    __block void (^findAndDismiss)(void);
+    findAndDismiss = ^{
+        UIWindow *win = UIApplication.sharedApplication.windows.firstObject;
+        BOOL found = NO;
+        for (UIView *v in win.subviews.reverseObjectEnumerator) {
+            // UIActionSheet responds to dismissWithClickedButtonIndex:animated:
+            if ([v respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
+                [(UIActionSheet *)v dismissWithClickedButtonIndex:3 animated:NO];
+                found = YES; break;
             }
-            if (!restoreAction)
-                for (UIAlertAction *action in ac.actions.reverseObjectEnumerator)
-                    if (action.style != UIAlertActionStyleCancel) { restoreAction = action; break; }
-
-            void (^handler)(UIAlertAction *) = nil;
-            if (restoreAction) @try { handler = [restoreAction valueForKey:@"handler"]; } @catch (...) {}
-            // Dismiss immediately (no animation = invisible)
-            [top dismissViewControllerAnimated:NO completion:^{
-                if (handler) handler(restoreAction);
-            }];
-        } else if (++retries < 20) {
-            // Not yet presented — try again in 50ms (max 1s total)
+        }
+        if (!found && ++retries < 20) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), checkAndRestore);
+                           dispatch_get_main_queue(), findAndDismiss);
         }
     };
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), checkAndRestore);
+                   dispatch_get_main_queue(), findAndDismiss);
 }
-
-
-
 
 
 
