@@ -60,6 +60,20 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
+// ---- BFS search for UIActionSheet in window tree ----
+static UIActionSheet *findActionSheet(void) {
+    for (UIWindow *win in UIApplication.sharedApplication.windows) {
+        NSMutableArray *q = [NSMutableArray arrayWithObject:win];
+        while (q.count) {
+            UIView *v = q.firstObject; [q removeObjectAtIndex:0];
+            if ([v respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)])
+                return (UIActionSheet *)v;
+            [q addObjectsFromArray:v.subviews];
+        }
+    }
+    return nil;
+}
+
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
     NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
@@ -72,7 +86,6 @@ static void adm_restoreNext(id self, SEL _cmd) {
     NSInteger idx = idxN ? idxN.integerValue : 0;
     if (idx >= (NSInteger)backups.count) idx = 0;
 
-    NSString *chosen = backups[(NSUInteger)idx];
     NSInteger next = (idx + 1) % (NSInteger)backups.count;
     objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
@@ -84,7 +97,6 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UITableView *tv = nil;
     @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
 
-    // Find row for chosen backup (table: newest→oldest, array: oldest→newest)
     NSIndexPath *targetIP = nil;
     if (tv) {
         for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
@@ -99,18 +111,23 @@ static void adm_restoreNext(id self, SEL _cmd) {
     }
     if (!targetIP) return;
 
-    // Simulate row tap → VC sets actionSheetItem with correct type + shows action sheet
+    // Simulate row tap → VC sets actionSheetItem + shows UIActionSheet
     typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
     SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Call restore after action sheet is ready
-    // User taps Cancel manually — no programmatic dismiss needed (manual Cancel has no freeze)
+    // Step 1 (t=0.4s): dismiss action sheet FIRST (before restore HUD appears)
+    // Step 2 (t=0.5s): call restore AFTER dismiss — no HUD conflict
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        SEL restoreSel = NSSelectorFromString(@"restore");
-        if ([(id)self respondsToSelector:restoreSel])
-            ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
+        UIActionSheet *sheet = findActionSheet();
+        if (sheet) [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            SEL restoreSel = NSSelectorFromString(@"restore");
+            if ([(id)self respondsToSelector:restoreSel])
+                ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
+        });
     });
 }
 
