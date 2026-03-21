@@ -1,4 +1,4 @@
-name: Build and Patch ADManager
+name: Build ADManagerRotation.dylib
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
     - name: Build Dylib
@@ -27,19 +27,11 @@ jobs:
           -install_name @executable_path/ADManagerRotation.dylib \
           -o ADManagerRotation.dylib \
           Tweak.m
-        echo "Dylib size: $(wc -c < ADManagerRotation.dylib) bytes"
+        echo "Done. Size: $(wc -c < ADManagerRotation.dylib) bytes"
 
-    - name: Patch IPA
-      run: |
-        if [ -f "ADManager.ipa" ]; then
-          chmod +x patch.sh
-          ./patch.sh ADManager.ipa
-        else
-          echo "ADManager.ipa not found!"
-        fi
-
-    - name: Upload Patched IPA
+    - name: Upload Dylib
       uses: actions/upload-artifact@v4
       with:
-        name: ADManager_Patched
-        path: ADManager_Patched.ipa
+        name: ADManagerRotation
+        path: ADManagerRotation.dylib
+
