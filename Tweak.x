@@ -1,5 +1,5 @@
-// ADManagerRotation - Runtime class scanner
-// Finds the restore method by scanning ALL ObjC classes - no class name guessing
+// ADManagerRotation - Adds "Restore A-Z (N)" button to BackupInfoTableViewController
+// Pure ObjC runtime - no Substrate dependency
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -7,119 +7,207 @@
 #import <objc/message.h>
 
 typedef void (*RestoreIMP)(id, SEL, NSString *, NSString *, id, id);
-static RestoreIMP original_restoreApp = NULL;
 
-static void showAlert(NSString *title, NSString *msg) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *win = UIApplication.sharedApplication.windows.firstObject;
-        if (!win.rootViewController) return;
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [win.rootViewController presentViewController:a animated:YES completion:nil];
-    });
+// Use associated object key for per-instance state
+static const void *kCurrentIndexKey = &kCurrentIndexKey;
+static const void *kBundleIDKey     = &kBundleIDKey;
+static const void *kButtonKey       = &kButtonKey;
+
+#pragma mark - Helpers
+
+static NSArray<NSString *> *getSortedBackups(NSString *bundleID) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dir = @"/var/mobile/Library/ADManager";
+    NSError *err = nil;
+    NSArray *all = [fm contentsOfDirectoryAtPath:dir error:&err];
+    if (!all || err) return @[];
+    NSString *pfx = [bundleID stringByAppendingString:@"_"];
+    NSMutableArray *result = [NSMutableArray array];
+    for (NSString *f in all) {
+        if ([f hasPrefix:pfx] && [f hasSuffix:@".adbk"])
+            [result addObject:[dir stringByAppendingPathComponent:f]];
+    }
+    [result sortUsingSelector:@selector(compare:)];
+    return result;
 }
 
-static void swizzled_restoreApp(id self, SEL _cmd, NSString *bundleID, NSString *path, id progress, id completion) {
+static NSString *getBundleID(id vc) {
+    // Try several key paths used internally by ADManager
+    NSArray *keys = @[@"bundleId", @"bundleID", @"appBundleId", @"appBundleID"];
+    for (NSString *k in keys) {
+        @try {
+            id val = [vc valueForKey:k];
+            if ([val isKindOfClass:[NSString class]] && [(NSString*)val length] > 0)
+                return val;
+        } @catch (...) {}
+    }
+    // Try getting from backupList model
     @try {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *dir = @"/var/mobile/Library/ADManager";
-        NSError *err = nil;
-        NSArray *allFiles = [fm contentsOfDirectoryAtPath:dir error:&err];
-
-        if (err || !allFiles) {
-            showAlert(@"ADM Hook", [NSString stringWithFormat:@"Dir error: %@", err.localizedDescription]);
-            if (original_restoreApp) original_restoreApp(self, _cmd, bundleID, path, progress, completion);
-            return;
+        id model = [vc valueForKey:@"backupList"];
+        for (NSString *k in keys) {
+            @try {
+                id val = [model valueForKey:k];
+                if ([val isKindOfClass:[NSString class]] && [(NSString*)val length] > 0)
+                    return val;
+            } @catch (...) {}
         }
+    } @catch (...) {}
+    // Last resort: read first .adbk file from dir and parse bundle ID from filename
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *files = [fm contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
+    for (NSString *f in files) {
+        if ([f hasSuffix:@".adbk"]) {
+            NSArray *parts = [f componentsSeparatedByString:@"_"];
+            if (parts.count >= 2) return [parts firstObject];
+        }
+    }
+    return nil;
+}
 
-        NSString *pfx = [bundleID stringByAppendingString:@"_"];
-        NSMutableArray<NSString *> *backups = [NSMutableArray array];
-        for (NSString *f in allFiles) {
-            if ([f hasPrefix:pfx] && [f hasSuffix:@".adbk"]) {
-                [backups addObject:[dir stringByAppendingPathComponent:f]];
+static void updateButtonTitle(UIBarButtonItem *btn, NSInteger idx, NSUInteger total) {
+    NSString *title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(idx + 1)];
+    [btn setTitle:title];
+    (void)total;
+}
+
+#pragma mark - Button Action (added as method on VC class)
+
+static void admRestoreNext(id self, SEL _cmd) {
+    @try {
+        NSString *bundleID = objc_getAssociatedObject(self, kBundleIDKey);
+        if (!bundleID || bundleID.length == 0) {
+            bundleID = getBundleID(self);
+            if (!bundleID) {
+                UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Error" message:@"Could not determine Bundle ID." preferredStyle:UIAlertControllerStyleAlert];
+                [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:a animated:YES completion:nil];
+                return;
             }
+            objc_setAssociatedObject(self, kBundleIDKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        [backups sortUsingSelector:@selector(compare:)];
 
-        if (backups.count <= 1) {
-            showAlert(@"ADM Hook Active ✓", [NSString stringWithFormat:@"Only %lu backup for\n%@\n\nNeed 2+ to rotate.", (unsigned long)backups.count, bundleID]);
-            if (original_restoreApp) original_restoreApp(self, _cmd, bundleID, path, progress, completion);
+        NSArray<NSString *> *backups = getSortedBackups(bundleID);
+        if (backups.count == 0) {
+            UIAlertController *a = [UIAlertController alertControllerWithTitle:@"ADM Rotation" message:@"No backups found for this app." preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:a animated:YES completion:nil];
             return;
         }
 
-        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-        NSString *idxKey      = [@"ADMIdx_" stringByAppendingString:bundleID];
-        NSString *lastPathKey = [@"ADMLast_" stringByAppendingString:bundleID];
-        NSString *lastPath    = [ud stringForKey:lastPathKey];
-        NSInteger idx = [ud integerForKey:idxKey];
-
-        if (lastPath && ![path isEqualToString:lastPath]) {
-            NSUInteger found = [backups indexOfObject:path];
-            idx = (found != NSNotFound) ? (NSInteger)((found + 1) % backups.count) : 0;
-        }
+        NSNumber *idxNum = objc_getAssociatedObject(self, kCurrentIndexKey);
+        NSInteger idx = idxNum ? idxNum.integerValue : 0;
         if (idx >= (NSInteger)backups.count) idx = 0;
 
-        NSString *chosen = backups[(NSUInteger)idx];
-        [ud setObject:chosen forKey:lastPathKey];
-        [ud setInteger:(idx + 1) % (NSInteger)backups.count forKey:idxKey];
-        [ud synchronize];
+        NSString *chosenPath = backups[(NSUInteger)idx];
+        NSLog(@"[ADMRotation] Button: restoring idx=%ld path=%@", (long)idx, chosenPath);
 
-        showAlert(@"ADM Rotating ✓",
-                  [NSString stringWithFormat:@"Backup %ld/%lu\n%@",
-                   (long)(idx + 1), (unsigned long)backups.count, chosen.lastPathComponent]);
+        // Update button
+        UIBarButtonItem *btn = objc_getAssociatedObject(self, kButtonKey);
+        NSInteger nextIdx = (idx + 1) % (NSInteger)backups.count;
+        objc_setAssociatedObject(self, kCurrentIndexKey, @(nextIdx), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (btn) updateButtonTitle(btn, nextIdx, backups.count);
 
-        if (original_restoreApp) {
-            original_restoreApp(self, _cmd, bundleID, chosen, progress, completion);
+        // Call restore on BackupList model (it holds the actual restore logic)
+        SEL restoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
+        id model = nil;
+        @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
+
+        if (model && [model respondsToSelector:restoreSel]) {
+            ((RestoreIMP)objc_msgSend)(model, restoreSel, bundleID, chosenPath, nil, nil);
+        } else if ([self respondsToSelector:restoreSel]) {
+            ((RestoreIMP)objc_msgSend)(self, restoreSel, bundleID, chosenPath, nil, nil);
         }
 
     } @catch (NSException *e) {
-        if (original_restoreApp) original_restoreApp(self, _cmd, bundleID, path, progress, completion);
+        NSLog(@"[ADMRotation] Button action error: %@", e);
     }
 }
+
+#pragma mark - viewWillAppear swizzle
+
+static IMP original_viewWillAppear = NULL;
+
+static void swizzled_viewWillAppear(id self, SEL _cmd, BOOL animated) {
+    if (original_viewWillAppear)
+        ((void(*)(id,SEL,BOOL))original_viewWillAppear)(self, _cmd, animated);
+
+    @try {
+        // Only add button once per VC instance
+        UIBarButtonItem *existingBtn = objc_getAssociatedObject(self, kButtonKey);
+        if (existingBtn) return;
+
+        // Pre-fetch bundleID and backup count for initial button title
+        NSString *bundleID = getBundleID(self);
+        if (bundleID) {
+            objc_setAssociatedObject(self, kBundleIDKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        NSArray *backups = bundleID ? getSortedBackups(bundleID) : @[];
+        NSInteger startIdx = 0;
+        if (bundleID) {
+            // Restore saved index
+            NSString *idxKey = [@"ADMIdx_" stringByAppendingString:bundleID];
+            startIdx = [[NSUserDefaults standardUserDefaults] integerForKey:idxKey];
+            if (startIdx >= (NSInteger)backups.count) startIdx = 0;
+        }
+        objc_setAssociatedObject(self, kCurrentIndexKey, @(startIdx), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        // Create button
+        NSString *title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(startIdx + 1)];
+        UIBarButtonItem *btn = [[UIBarButtonItem alloc] initWithTitle:title
+                                                               style:UIBarButtonItemStylePlain
+                                                              target:self
+                                                              action:@selector(adm_restoreNext)];
+        objc_setAssociatedObject(self, kButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        // Add to navigation bar alongside existing right items
+        UINavigationItem *navItem = [(UIViewController *)self navigationItem];
+        NSArray *existing = navItem.rightBarButtonItems ?: @[];
+        navItem.rightBarButtonItems = [@[btn] arrayByAddingObjectsFromArray:existing];
+
+    } @catch (NSException *e) {
+        NSLog(@"[ADMRotation] viewWillAppear hook error: %@", e);
+    }
+}
+
+#pragma mark - Constructor
 
 __attribute__((constructor))
 static void ADMRotationInit(void) {
     @autoreleasepool {
-        SEL targetSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
-        NSString *foundClassName = nil;
+        NSLog(@"[ADMRotation] Initializing...");
 
-        // Scan ALL registered ObjC classes
-        unsigned int classCount = 0;
-        Class *classes = objc_copyClassList(&classCount);
+        SEL viewWillAppearSel = @selector(viewWillAppear:);
+        SEL restoreSel        = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
+        SEL buttonActionSel   = @selector(adm_restoreNext);
+
+        // Find BackupInfoTableViewController by scanning all classes
+        unsigned int count = 0;
+        Class *classes = objc_copyClassList(&count);
         if (!classes) return;
 
-        for (unsigned int i = 0; i < classCount; i++) {
+        for (unsigned int i = 0; i < count; i++) {
             Class cls = classes[i];
-            Method m = class_getInstanceMethod(cls, targetSel);
-            if (m) {
-                foundClassName = NSStringFromClass(cls);
-                NSLog(@"[ADMRotation] Found target method on class: %@", foundClassName);
+            // Look for a class that has both a restore method and a viewWillAppear (i.e., it's a VC)
+            if (!class_getInstanceMethod(cls, restoreSel)) continue;
 
-                // Swizzle it
-                original_restoreApp = (RestoreIMP)method_getImplementation(m);
-                method_setImplementation(m, (IMP)swizzled_restoreApp);
-                NSLog(@"[ADMRotation] Swizzled successfully!");
-                break;
-            }
+            // Check if it's a UIViewController subclass (has viewWillAppear:)
+            Method vwaMethod = class_getInstanceMethod(cls, viewWillAppearSel);
+            if (!vwaMethod) continue;
+
+            NSString *clsName = NSStringFromClass(cls);
+            NSLog(@"[ADMRotation] Found target VC: %@", clsName);
+
+            // Add the button action method
+            class_addMethod(cls, buttonActionSel, (IMP)admRestoreNext, "v@:");
+
+            // Swizzle viewWillAppear:
+            original_viewWillAppear = method_getImplementation(vwaMethod);
+            method_setImplementation(vwaMethod, (IMP)swizzled_viewWillAppear);
+
+            NSLog(@"[ADMRotation] Hooked viewWillAppear on %@", clsName);
+            break;
         }
         free(classes);
-
-        if (!foundClassName) {
-            NSLog(@"[ADMRotation] WARNING: Target method not found in any class!");
-            // Show alert after UI is ready
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                showAlert(@"ADM: Method Not Found ✗",
-                          @"restoreApp:fromPathBackup:progress:withCompletion:\n\nNot found in any class. Please report this.");
-            });
-        } else {
-            NSLog(@"[ADMRotation] Hooked class: %@", foundClassName);
-            NSString *hookedClass = foundClassName;
-            // Show startup confirmation after a short delay (UI needs to be ready)
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                showAlert(@"ADM Rotation Ready ✓",
-                          [NSString stringWithFormat:@"Hooked:\n%@\n\nPress Restore to rotate backups.", hookedClass]);
-            });
-        }
     }
 }
 
