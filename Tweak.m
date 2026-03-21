@@ -74,16 +74,18 @@ static BOOL dismissSheetInView(UIView *view) {
 
 static void dismissActionSheet(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // 1. Chỉ tắt UIActionSheet nếu tìm thấy
         for (UIWindow *win in UIApplication.sharedApplication.windows)
-            if (dismissSheetInView(win)) return;
-        // Fallback: try dismissViewControllerAnimated on any presented VC
-        UIWindow *kw = UIApplication.sharedApplication.keyWindow;
-        UIViewController *top = kw.rootViewController;
-        while (top.presentedViewController) top = top.presentedViewController;
-        [top dismissViewControllerAnimated:YES completion:nil];
+            if (dismissSheetInView(win)) break;
+        
+        // 2. Mở khóa tương tác (Fix freeze) - Tuyệt đối không đụng vào ViewController khác
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIApplication *app = [UIApplication sharedApplication];
+            while (app.isIgnoringInteractionEvents) [app endIgnoringInteractionEvents];
+            for (UIWindow *win in app.windows) win.userInteractionEnabled = YES;
+        });
     });
 }
-
 
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
