@@ -102,18 +102,12 @@ static NSString *const kRotationIndexPrefix = @"RotationIndex_";
     NSLog(@"[ADManager Rotation] Tweak dylib loaded. Initializing safe hooks...");
     
     // Lazy initialization: Check if class exists before hooking
-    // This prevents crash if BackupList is loaded later or is in a different image
     Class backupListClass = NSClassFromString(@"BackupList");
     if (backupListClass) {
         NSLog(@"[ADManager Rotation] Found BackupList class, initializing group...");
         %init(RotationHook, BackupList = backupListClass);
     } else {
-        NSLog(@"[ADManager Rotation] WARNING: BackupList class not found yet. Trying listener...");
-        
-        // Secondary strategy: wait for class if needed (usually for frameworks)
-        // But for main binary classes, if it's not here now, it's not in the binary.
-        // We'll just init anyway but mapping to nil will safely fail to hook.
-        %init(RotationHook); 
+        NSLog(@"[ADManager Rotation] WARNING: BackupList class not found. Tweak will not hook.");
     }
 }
 
