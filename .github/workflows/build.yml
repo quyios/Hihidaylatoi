@@ -13,15 +13,9 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up iOS SDK
-      run: |
-        # Use Xcode's built-in iOS SDK (always available on macos-latest runner)
-        SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-        echo "SDK=$SDK" >> $GITHUB_ENV
-        echo "Using SDK: $SDK"
-
     - name: Build Dylib
       run: |
+        SDK=$(xcrun --sdk iphoneos --show-sdk-path)
         xcrun clang \
           -arch arm64 \
           -isysroot $SDK \
@@ -33,7 +27,7 @@ jobs:
           -install_name @executable_path/ADManagerRotation.dylib \
           -o ADManagerRotation.dylib \
           Tweak.m
-        echo "Build complete. Dylib size: $(wc -c < ADManagerRotation.dylib) bytes"
+        echo "Dylib size: $(wc -c < ADManagerRotation.dylib) bytes"
 
     - name: Patch IPA
       run: |
@@ -41,13 +35,11 @@ jobs:
           chmod +x patch.sh
           ./patch.sh ADManager.ipa
         else
-          echo "ADManager.ipa not found! Please upload it to the repo root."
+          echo "ADManager.ipa not found!"
         fi
 
     - name: Upload Patched IPA
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: ADManager_Patched
         path: ADManager_Patched.ipa
-
