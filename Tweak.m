@@ -60,8 +60,18 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
-// ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
 
+static void dismissActionSheet(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        for (UIWindow *win in UIApplication.sharedApplication.windows)
+            if (dismissSheetInView(win)) return;
+        // Fallback: try dismissViewControllerAnimated on any presented VC
+        UIWindow *kw = UIApplication.sharedApplication.keyWindow;
+        UIViewController *top = kw.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
+        [top dismissViewControllerAnimated:YES completion:nil];
+    });
+}
 
 
 // ---- A-Z button tap ----
