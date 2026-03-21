@@ -11,10 +11,11 @@ static CellForRowIMP  gOrigCellForRow  = nil;
 static RealRestoreIMP gOrigRestoreApp  = nil;
 
 // Captured from the last real restore invocation
-static id        gLastRestoreTarget  = nil;  // BackupList instance
-static id        gLastAppArg         = nil;  // whatever arg restoreApp: takes as first param
-static id        gLastProgressBlk    = nil;  // progress block (may be nil)
-static id        gLastCompletionBlk  = nil;  // completion block (exact type, reuse for A-Z)
+static id        gLastRestoreTarget  = nil;
+static id        gLastAppArg         = nil;
+static id        gLastProgressBlk    = nil;
+static id        gLastCompletionBlk  = nil;
+static NSString *gCapturedInfo       = nil;  // diagnostic info string
 static SEL       gRestoreSel;
 
 // For button injection
@@ -95,17 +96,13 @@ static void adm_interceptRestore(id self, SEL _cmd, id appArg, NSString *path, i
     gLastAppArg         = appArg;
     gLastProgressBlk    = progress;
     gLastCompletionBlk  = completion;
-    // Call original normally
+    // Store captured info (for A-Z diagnostic) — no UI here
+    gCapturedInfo = [NSString stringWithFormat:
+        @"appArg:[%@] progress:[%@] completion:[%@]",
+        NSStringFromClass([appArg class]) ?: @"nil",
+        (progress ? @"YES" : @"nil"),
+        (completion ? @"YES" : @"nil")];
     if (gOrigRestoreApp) gOrigRestoreApp(self, _cmd, appArg, path, progress, completion);
-    // Delayed popup 5s after restore finishes
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        popup(@"ADM Captured Args", [NSString stringWithFormat:
-            @"appArg: [%@]\nprogress: [%@]\ncompletion: [%@]\npath: %@",
-            NSStringFromClass([appArg class]),
-            NSStringFromClass([[progress class] class]) ?: @"nil",
-            NSStringFromClass([[completion class] class]) ?: @"nil",
-            path.lastPathComponent]);
-    });
 }
 
 // ---- Button tap: A-Z rotation using captured args ----
@@ -114,7 +111,15 @@ static void adm_restoreNext(id self, SEL _cmd) {
     if (!bundleID) { popup(@"ADM ✗", @"No bundleID cached."); return; }
 
     if (!gLastRestoreTarget || !gLastAppArg) {
-        popup(@"ADM ✗", @"Chưa có lần restore nào!\n\nHãy TAP vào 1 backup bất kỳ → Restore 1 lần để A-Z bắt đầu hoạt động.");
+        popup(@"ADM ✗", @"Chưa có lần restore nào!\n\nHãy TAP vào 1 backup bất kỳ \u2192 Restore 1 lần trước.");
+        return;
+    }
+
+    // First tap: show diagnostic info
+    if (gCapturedInfo) {
+        NSString *info = gCapturedInfo;
+        gCapturedInfo = nil;
+        popup(@"ADM Ready ✓", [NSString stringWithFormat:@"Captured OK!\n%@\n\nNhấn A-Z lần nữa để restore.", info]);
         return;
     }
 
