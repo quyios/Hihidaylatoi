@@ -27,7 +27,7 @@ jobs:
     - name: Build Tweak
       run: |
         make -j$(sysctl -n hw.ncpu)
-        TWEAK_BINARY=$(grep 'TWEAK_NAME =' Makefile | cut -d' ' -f3).dylib
+        TWEAK_BINARY=$(grep 'TWEAK_NAME =' Makefile | cut -d' ' -f3 | tr -d '\r').dylib
         cp ".theos/obj/$TWEAK_BINARY" ./ADManagerRotation.dylib 2>/dev/null || cp ".theos/obj/debug/$TWEAK_BINARY" ./ADManagerRotation.dylib
         # Sign the dylib using macOS native codesign (more reliable than ldid here)
         codesign -s - --force ADManagerRotation.dylib
