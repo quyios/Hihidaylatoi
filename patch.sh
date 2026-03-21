@@ -15,9 +15,15 @@ echo "Unzipping IPA..."
 unzip -q "$IPA_NAME"
 
 echo "Injecting dylib..."
-# Download insert_dylib if not present
+# Compile insert_dylib if not present
 if [ ! -f "./insert_dylib" ]; then
-    curl -L https://github.com/Tyilo/insert_dylib/releases/download/v1.0/insert_dylib -o insert_dylib
+    echo "Compiling insert_dylib from source..."
+    git clone https://github.com/Tyilo/insert_dylib.git
+    cd insert_dylib
+    xcodebuild -quiet
+    cp build/Release/insert_dylib ../insert_dylib
+    cd ..
+    rm -rf insert_dylib
     chmod +x insert_dylib
 fi
 
@@ -34,3 +40,4 @@ zip -qr "$NEW_IPA" Payload
 
 echo "Done! Patched IPA: $NEW_IPA"
 rm -rf Payload
+
