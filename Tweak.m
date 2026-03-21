@@ -65,7 +65,7 @@ static void adm_restoreNext(id self, SEL _cmd) {
     objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     NSArray<NSString *> *backups = sortedBackups(bundleID);
-    if (backups.count == 0) { popup(@"ADM ✗", [NSString stringWithFormat:@"Không có backup cho:\n%@", bundleID]); return; }
+    if (!backups.count) { popup(@"ADM ✗", [NSString stringWithFormat:@"Không có backup cho:\n%@", bundleID]); return; }
 
     NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
     NSInteger idx  = idxN ? idxN.integerValue : 0;
@@ -80,15 +80,13 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next + 1)];
 
-    popup(@"ADM Restoring", [NSString stringWithFormat:@"#%ld/%lu\n%@\n\nBundle: %@",
-        (long)(idx + 1), (unsigned long)backups.count, chosen.lastPathComponent, bundleID]);
+    popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"Backup #%ld/%lu\n%@",
+        (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
 
     if (model && [model respondsToSelector:gRestoreSel])
         ((RestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, nil, nil);
     else if ([self respondsToSelector:gRestoreSel])
         ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
-    else
-        popup(@"ADM ✗", @"Không tìm được method restore!");
 }
 
 // ---- Inject button ----
@@ -99,8 +97,8 @@ static void injectButton(id self) {
     NSString *bundleID = getBundleID(model) ?: getBundleID(self);
     if (bundleID) {
         objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
-        objc_setAssociatedObject(self, kIdxKey, @(saved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSInteger s = [[NSUserDefaults standardUserDefaults] integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
+        objc_setAssociatedObject(self, kIdxKey, @(s), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NSNumber *n = objc_getAssociatedObject(self, kIdxKey) ?: @0;
     NSString *title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(n.integerValue + 1)];
@@ -122,9 +120,8 @@ static void injectButton(id self) {
         }]];
         [items insertObject:btn atIndex:0];
         nav.rightBarButtonItems = items;
-        // Confirm button injected
-        popup(@"ADM ✓ Button Added", [NSString stringWithFormat:@"Class: %@\nBundle: %@",
-            NSStringFromClass([self class]), bundleID ?: @"(unknown)"]);
+        popup(@"ADM ✓ Button Injected", [NSString stringWithFormat:@"Class: %@\nBundle: %@",
+            NSStringFromClass([self class]), bundleID ?: @"?"]);
     };
     if ([NSThread isMainThread]) inject();
     else dispatch_async(dispatch_get_main_queue(), inject);
@@ -133,12 +130,10 @@ static void injectButton(id self) {
 // ---- setBackupList: hook ----
 static void adm_setBackupList(id self, SEL _cmd, id backupList) {
     if (gOrigSetBL) gOrigSetBL(self, _cmd, backupList);
-    @try { injectButton(self); } @catch (NSException *e) {
-        popup(@"ADM Hook Error", e.description);
-    }
+    @try { injectButton(self); } @catch (...) {}
 }
 
-// ---- tableView:didSelectRowAtIndexPath: fallback hook ----
+// ---- tableView:didSelectRow: fallback ----
 static void adm_didSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
     if (gOrigDidSelect) gOrigDidSelect(self, _cmd, tv, ip);
     @try { if (!objc_getAssociatedObject(self, kBtnKey)) injectButton(self); } @catch (...) {}
@@ -150,29 +145,37 @@ static void ADMRotationInit(void) {
     @autoreleasepool {
         gRestoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
 
-        // Popup 1: Dylib loaded
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            popup(@"ADM Dylib Loaded ✓", @"ADManagerRotation.dylib đã được load!\n\nĐang tìm class...");
-        });
+        // === Strategy 1: Direct name lookup ===
+        Class vcClass = NSClassFromString(@"BackupInfoTableViewController");
 
-        // Find target VC by unique method "DeleteEntry:"
-        unsigned int count = 0;
-        Class *classes = objc_copyClassList(&count);
-        if (!classes) return;
-        Class vcClass = nil;
-        for (unsigned int i = 0; i < count; i++) {
-            if (class_getInstanceMethod(classes[i], NSSelectorFromString(@"DeleteEntry:"))) {
-                vcClass = classes[i]; break;
+        // === Strategy 2: Scan for class with BOTH setSelectedBackup: AND setBackupList: ===
+        if (!vcClass) {
+            SEL sel1 = NSSelectorFromString(@"setSelectedBackup:");
+            SEL sel2 = NSSelectorFromString(@"setBackupList:");
+            unsigned int count = 0;
+            Class *classes = objc_copyClassList(&count);
+            NSMutableArray *candidates = [NSMutableArray array];
+            for (unsigned int i = 0; i < count; i++) {
+                Class cls = classes[i];
+                if (class_getInstanceMethod(cls, sel1) && class_getInstanceMethod(cls, sel2)) {
+                    [candidates addObject:NSStringFromClass(cls)];
+                    if (!vcClass) vcClass = cls;
+                }
             }
+            free(classes);
+            // Show all candidates for debugging
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                popup(@"ADM Candidates", candidates.count
+                      ? [NSString stringWithFormat:@"Classes with setSelectedBackup: + setBackupList:\n\n%@",
+                         [candidates componentsJoinedByString:@"\n"]]
+                      : @"No candidates found for Strategy 2 either!");
+            });
         }
-        free(classes);
 
-        // Popup 2: class found or not
-        NSString *clsName = NSStringFromClass(vcClass) ?: @"NOT FOUND";
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            popup(@"ADM Target Class", vcClass
-                  ? [NSString stringWithFormat:@"✓ Found:\n%@\n\nHooking...", clsName]
-                  : @"✗ DeleteEntry: class not found!\nCần báo lại để debug.");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            popup(@"ADM Dylib ✓", vcClass
+                  ? [NSString stringWithFormat:@"Target class:\n%@", NSStringFromClass(vcClass)]
+                  : @"Target class NOT found!\nChecking candidates...");
         });
 
         if (!vcClass) return;
