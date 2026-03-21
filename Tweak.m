@@ -4,12 +4,10 @@
 #import <objc/message.h>
 
 typedef void (*RestoreIMP)(id, SEL, NSString *, NSString *, id, id);
-typedef void (*SetBLIMP)(id, SEL, id);
-typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
+typedef UITableViewCell *(*CellForRowIMP)(id, SEL, UITableView *, NSIndexPath *);
 
-static SetBLIMP     gOrigSetBL     = nil;
-static DidSelectIMP gOrigDidSelect = nil;
-static SEL          gRestoreSel;
+static CellForRowIMP gOrigCellForRow = nil;
+static SEL gRestoreSel;
 
 static const void *kBtnKey    = &kBtnKey;
 static const void *kIdxKey    = &kIdxKey;
@@ -45,6 +43,7 @@ static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
 }
 
 static NSString *getBundleID(id obj) {
+    if (!obj) return nil;
     for (NSString *k in @[@"bundleId", @"bundleID", @"appBundleId", @"bundleIdentifier"]) {
         @try {
             id v = [obj valueForKey:k];
@@ -59,20 +58,18 @@ static void adm_restoreNext(id self, SEL _cmd) {
     NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
     id model = nil;
     @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
-    if (!bundleID) bundleID = getBundleID(model);
-    if (!bundleID) bundleID = getBundleID(self);
+    if (!bundleID) bundleID = getBundleID(model) ?: getBundleID(self);
     if (!bundleID) { popup(@"ADM ✗", @"Không tìm được Bundle ID!"); return; }
-    objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     NSArray<NSString *> *backups = sortedBackups(bundleID);
     if (!backups.count) { popup(@"ADM ✗", [NSString stringWithFormat:@"Không có backup cho:\n%@", bundleID]); return; }
 
     NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
-    NSInteger idx  = idxN ? idxN.integerValue : 0;
+    NSInteger idx = idxN ? idxN.integerValue : 0;
     if (idx >= (NSInteger)backups.count) idx = 0;
 
     NSString *chosen = backups[(NSUInteger)idx];
-    NSInteger next   = (idx + 1) % (NSInteger)backups.count;
+    NSInteger next = (idx + 1) % (NSInteger)backups.count;
     objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
     [[NSUserDefaults standardUserDefaults] synchronize];
@@ -89,9 +86,11 @@ static void adm_restoreNext(id self, SEL _cmd) {
         ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
 }
 
-// ---- Inject button ----
+// ---- Inject button into nav bar ----
 static void injectButton(id self) {
     if (objc_getAssociatedObject(self, kBtnKey)) return;
+
+    // Get bundleID
     id model = nil;
     @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
     NSString *bundleID = getBundleID(model) ?: getBundleID(self);
@@ -100,6 +99,7 @@ static void injectButton(id self) {
         NSInteger s = [[NSUserDefaults standardUserDefaults] integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
         objc_setAssociatedObject(self, kIdxKey, @(s), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+
     NSNumber *n = objc_getAssociatedObject(self, kIdxKey) ?: @0;
     NSString *title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(n.integerValue + 1)];
 
@@ -107,36 +107,30 @@ static void injectButton(id self) {
     if (![self respondsToSelector:actionSel])
         class_addMethod([self class], actionSel, (IMP)adm_restoreNext, "v@:");
 
-    UIBarButtonItem *btn = [[UIBarButtonItem alloc] initWithTitle:title
-                                                           style:UIBarButtonItemStylePlain
-                                                          target:self action:actionSel];
+    UIBarButtonItem *btn = [[UIBarButtonItem alloc]
+        initWithTitle:title style:UIBarButtonItemStylePlain target:self action:actionSel];
     objc_setAssociatedObject(self, kBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    void (^inject)(void) = ^{
-        UINavigationItem *nav = [(UIViewController *)self navigationItem];
-        NSMutableArray *items = [NSMutableArray arrayWithArray:nav.rightBarButtonItems ?: @[]];
-        [items filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(UIBarButtonItem *b, id _) {
-            return ![b.title hasPrefix:@"Restore A-Z"];
-        }]];
-        [items insertObject:btn atIndex:0];
-        nav.rightBarButtonItems = items;
-        popup(@"ADM ✓ Button Injected", [NSString stringWithFormat:@"Class: %@\nBundle: %@",
-            NSStringFromClass([self class]), bundleID ?: @"?"]);
-    };
-    if ([NSThread isMainThread]) inject();
-    else dispatch_async(dispatch_get_main_queue(), inject);
+    UINavigationItem *nav = [(UIViewController *)self navigationItem];
+    NSMutableArray *items = [NSMutableArray arrayWithArray:nav.rightBarButtonItems ?: @[]];
+    [items filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(UIBarButtonItem *b, id _) {
+        return ![b.title hasPrefix:@"Restore A-Z"];
+    }]];
+    [items insertObject:btn atIndex:0];
+    nav.rightBarButtonItems = items;
 }
 
-// ---- setBackupList: hook ----
-static void adm_setBackupList(id self, SEL _cmd, id backupList) {
-    if (gOrigSetBL) gOrigSetBL(self, _cmd, backupList);
-    @try { injectButton(self); } @catch (...) {}
-}
-
-// ---- tableView:didSelectRow: fallback ----
-static void adm_didSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (gOrigDidSelect) gOrigDidSelect(self, _cmd, tv, ip);
-    @try { if (!objc_getAssociatedObject(self, kBtnKey)) injectButton(self); } @catch (...) {}
+// ---- cellForRowAtIndexPath: hook — guaranteed to fire when table is visible ----
+static UITableViewCell *adm_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    UITableViewCell *cell = nil;
+    if (gOrigCellForRow) cell = gOrigCellForRow(self, _cmd, tv, ip);
+    // Inject button only once
+    if (!objc_getAssociatedObject(self, kBtnKey)) {
+        injectButton(self);
+        popup(@"ADM Hook Fired ✓", [NSString stringWithFormat:@"cellForRow hoạt động!\nClass: %@",
+            NSStringFromClass([self class])]);
+    }
+    return cell;
 }
 
 // ---- Constructor ----
@@ -145,48 +139,54 @@ static void ADMRotationInit(void) {
     @autoreleasepool {
         gRestoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
 
-        // === Strategy 1: Direct name lookup ===
+        // Find class
         Class vcClass = NSClassFromString(@"BackupInfoTableViewController");
 
-        // === Strategy 2: Scan for class with BOTH setSelectedBackup: AND setBackupList: ===
+        // Fallback: find by having setSelectedBackup: + setBackupList:
         if (!vcClass) {
-            SEL sel1 = NSSelectorFromString(@"setSelectedBackup:");
-            SEL sel2 = NSSelectorFromString(@"setBackupList:");
             unsigned int count = 0;
             Class *classes = objc_copyClassList(&count);
-            NSMutableArray *candidates = [NSMutableArray array];
             for (unsigned int i = 0; i < count; i++) {
                 Class cls = classes[i];
-                if (class_getInstanceMethod(cls, sel1) && class_getInstanceMethod(cls, sel2)) {
-                    [candidates addObject:NSStringFromClass(cls)];
-                    if (!vcClass) vcClass = cls;
+                if (class_getInstanceMethod(cls, NSSelectorFromString(@"setSelectedBackup:")) &&
+                    class_getInstanceMethod(cls, NSSelectorFromString(@"setBackupList:"))) {
+                    vcClass = cls; break;
                 }
             }
             free(classes);
-            // Show all candidates for debugging
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                popup(@"ADM Candidates", candidates.count
-                      ? [NSString stringWithFormat:@"Classes with setSelectedBackup: + setBackupList:\n\n%@",
-                         [candidates componentsJoinedByString:@"\n"]]
-                      : @"No candidates found for Strategy 2 either!");
-            });
         }
 
+        // Popup 1: startup
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            popup(@"ADM Dylib ✓", vcClass
-                  ? [NSString stringWithFormat:@"Target class:\n%@", NSStringFromClass(vcClass)]
-                  : @"Target class NOT found!\nChecking candidates...");
+            if (vcClass) {
+                // Dump all own methods of the class for diagnostics
+                unsigned int mc = 0;
+                Method *methods = class_copyMethodList(vcClass, &mc);
+                NSMutableArray *names = [NSMutableArray array];
+                for (unsigned i = 0; i < mc && i < 20; i++)
+                    [names addObject:NSStringFromSelector(method_getName(methods[i]))];
+                free(methods);
+                popup(@"ADM ✓ Class Found",
+                    [NSString stringWithFormat:@"%@\n\nMethods (%u):\n%@",
+                     NSStringFromClass(vcClass), mc,
+                     [names componentsJoinedByString:@"\n"]]);
+            } else {
+                popup(@"ADM ✗", @"Không tìm được class!\nCả 2 strategy đều thất bại.");
+            }
         });
 
         if (!vcClass) return;
 
+        // Add button action
         class_addMethod(vcClass, @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
 
-        Method m1 = class_getInstanceMethod(vcClass, NSSelectorFromString(@"setBackupList:"));
-        if (m1) { gOrigSetBL = (SetBLIMP)method_getImplementation(m1); method_setImplementation(m1, (IMP)adm_setBackupList); }
-
-        Method m2 = class_getInstanceMethod(vcClass, @selector(tableView:didSelectRowAtIndexPath:));
-        if (m2) { gOrigDidSelect = (DidSelectIMP)method_getImplementation(m2); method_setImplementation(m2, (IMP)adm_didSelect); }
+        // Hook cellForRowAtIndexPath: — GUARANTEED to be called when the table shows
+        SEL cellSel = @selector(tableView:cellForRowAtIndexPath:);
+        Method cellM = class_getInstanceMethod(vcClass, cellSel);
+        if (cellM) {
+            gOrigCellForRow = (CellForRowIMP)method_getImplementation(cellM);
+            method_setImplementation(cellM, (IMP)adm_cellForRow);
+        }
     }
 }
 
