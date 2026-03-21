@@ -60,46 +60,20 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
-// ---- Auto-dismiss UIActionSheet (recursive search) ----
+// ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
 static BOOL dismissSheetInView(UIView *view) {
-    if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
+    if ([view isKindOfClass:NSClassFromString(@"UIActionSheet")]) {
         UIActionSheet *sheet = (UIActionSheet *)view;
-        // Programmatic dismiss without animation is safer for automated flows
         [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
         return YES;
     }
-    for (UIView *sub in view.subviews)
+    for (UIView *sub in view.subviews) {
         if (dismissSheetInView(sub)) return YES;
+    }
     return NO;
 }
 
-static void dismissActionSheet(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // 1. Dismiss UIActionSheet
-        for (UIWindow *win in UIApplication.sharedApplication.windows)
-            if (dismissSheetInView(win)) break;
 
-        // 2. Dismiss any presented Modal (UIAlertController etc)
-        UIWindow *win = UIApplication.sharedApplication.windows.firstObject;
-        UIViewController *top = win.rootViewController;
-        while (top.presentedViewController) {
-            UIViewController *p = top.presentedViewController;
-             [p dismissViewControllerAnimated:NO completion:nil];
-             top = p;
-        }
-
-        // 3. Force re-enable UI interactions (Fixes freeze)
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIApplication *app = [UIApplication sharedApplication];
-            while (app.isIgnoringInteractionEvents) {
-                [app endIgnoringInteractionEvents];
-            }
-            for (UIWindow *w in app.windows) {
-                w.userInteractionEnabled = YES;
-            }
-        });
-    });
-}
 
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
@@ -122,9 +96,11 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
+    // Get table view
     UITableView *tv = nil;
     @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
 
+    // Find the row for chosen backup (table: newest→oldest, our array: oldest→newest)
     NSIndexPath *targetIP = nil;
     if (tv) {
         for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
@@ -139,17 +115,18 @@ static void adm_restoreNext(id self, SEL _cmd) {
     }
     if (!targetIP) return;
 
+    // Simulate row tap → VC sets actionSheetItem with correct type + shows UIActionSheet
     typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
     SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
+    // Call restore after action sheet is set up
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         SEL restoreSel = NSSelectorFromString(@"restore");
         if ([(id)self respondsToSelector:restoreSel])
             ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
-        
-        // Dismiss everything and re-enable UI
+        // Dismiss the action sheet silently
         dismissActionSheet();
     });
 }
