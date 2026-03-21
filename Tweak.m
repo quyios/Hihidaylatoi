@@ -201,42 +201,79 @@ static void adm_restoreNext(id self, SEL _cmd) {
     popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@\n%@\n\n%@",
         (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent, bundleID, modelInfo]);
 
-    // Dummy blocks with generic `id` args — safe regardless of what the method passes to them
-    // (passing nil crashes if the method calls blocks unconditionally)
+    // Diagnose method signature
+    id restoreTarget = (model && [model respondsToSelector:gRestoreSel]) ? model : nil;
+    if (!restoreTarget && [self respondsToSelector:gRestoreSel]) restoreTarget = self;
+
+    if (!restoreTarget) {
+        // Try BackupList singleton
+        Class blClass = NSClassFromString(@"BackupList");
+        if (blClass) {
+            id instance = nil;
+            for (NSString *m in @[@"shared", @"sharedInstance", @"defaultList"]) {
+                SEL s = NSSelectorFromString(m);
+                if ([blClass respondsToSelector:s]) { instance = ((id(*)(id,SEL))objc_msgSend)(blClass, s); break; }
+            }
+            if (!instance) instance = [[blClass alloc] init];
+            if (instance && [instance respondsToSelector:gRestoreSel]) restoreTarget = instance;
+        }
+    }
+
+    if (!restoreTarget) { popup(@"ADM ✗", @"Không tìm được restore target!"); return; }
+
+    // Check if first arg is an object (@ = id / proxy, * = C-string)
+    NSMethodSignature *sig = [restoreTarget methodSignatureForSelector:gRestoreSel];
+    const char *arg2Type = sig ? [sig getArgumentTypeAtIndex:2] : "?";
+    NSString *arg2Desc = @(arg2Type ?: "?");
+
+    // Get LSApplicationProxy for our bundle ID
+    id appArg = nil;
+    @try {
+        Class lsws = NSClassFromString(@"LSApplicationWorkspace");
+        if (lsws) {
+            SEL defSel = NSSelectorFromString(@"defaultWorkspace");
+            id ws = ((id(*)(id,SEL))objc_msgSend)(lsws, defSel);
+            SEL proxySel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+            if (ws && [ws respondsToSelector:proxySel])
+                appArg = ((id(*)(id,SEL,id))objc_msgSend)(ws, proxySel, bundleID);
+        }
+    } @catch (...) {}
+
     typedef void (^ProgressBlock)(id);
     typedef void (^CompletionBlock)(id, id);
-    ProgressBlock   progressDummy    = ^(id p) {};
-    CompletionBlock completionDummy  = ^(id result, id error) {
+    ProgressBlock   progressDummy   = ^(id p) {};
+    CompletionBlock completionDummy = ^(id result, id error) {
         popup(error ? @"ADM ✗ Failed" : @"ADM ✓ Done!",
               error ? [NSString stringWithFormat:@"Error: %@", error]
                     : [NSString stringWithFormat:@"Restored!\n%@", chosen.lastPathComponent]);
     };
+    typedef void (*SafeRestoreIMP)(id, SEL, id, NSString *, ProgressBlock, CompletionBlock);
 
-    typedef void (*SafeRestoreIMP)(id, SEL, NSString *, NSString *, ProgressBlock, CompletionBlock);
+    // Show diagnostic popup
+    popup(@"ADM Debug Restore", [NSString stringWithFormat:
+        @"target: %@\narg[2] type: %@\nappProxy: %@\nbundleID: %@\npath: %@",
+        NSStringFromClass([restoreTarget class]),
+        arg2Desc,
+        appArg ? NSStringFromClass([appArg class]) : @"nil",
+        bundleID,
+        chosen.lastPathComponent]);
 
-    if (model && [model respondsToSelector:gRestoreSel]) {
-        ((SafeRestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, progressDummy, completionDummy);
-        return;
-    }
-    if ([self respondsToSelector:gRestoreSel]) {
-        ((SafeRestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, progressDummy, completionDummy);
-        return;
-    }
-    // Try BackupList singleton
-    Class blClass = NSClassFromString(@"BackupList");
-    if (blClass) {
-        id instance = nil;
-        for (NSString *m in @[@"shared", @"sharedInstance", @"defaultList"]) {
-            SEL s = NSSelectorFromString(m);
-            if ([blClass respondsToSelector:s]) { instance = ((id(*)(id,SEL))objc_msgSend)(blClass, s); break; }
-        }
-        if (!instance) instance = [[blClass alloc] init];
-        if (instance && [instance respondsToSelector:gRestoreSel]) {
-            ((SafeRestoreIMP)objc_msgSend)(instance, gRestoreSel, bundleID, chosen, progressDummy, completionDummy);
+    // Try 1: LSApplicationProxy as first arg
+    if (appArg) {
+        @try {
+            ((SafeRestoreIMP)objc_msgSend)(restoreTarget, gRestoreSel, appArg, chosen, progressDummy, completionDummy);
             return;
+        } @catch (NSException *e) {
+            popup(@"ADM Proxy Failed", e.reason ?: @"unknown");
         }
     }
-    popup(@"ADM ✗", @"Không tìm được restore method!");
+
+    // Try 2: bundleID string as first arg
+    @try {
+        ((SafeRestoreIMP)objc_msgSend)(restoreTarget, gRestoreSel, bundleID, chosen, progressDummy, completionDummy);
+    } @catch (NSException *e) {
+        popup(@"ADM String Failed", e.reason ?: @"unknown");
+    }
 }
 
 
