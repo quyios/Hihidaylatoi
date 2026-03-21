@@ -1,0 +1,50 @@
+name: Build and Patch ADManager
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Theos
+      run: |
+        export THEOS=~/theos
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        echo "THEOS=~/theos" >> $GITHUB_ENV
+        
+    - name: Set up iOS SDK
+      run: |
+        mkdir -p $THEOS/sdks
+        curl -L https://github.com/theos/sdks/raw/master/iPhoneOS14.5.sdk.tar.xz -o sdk.tar.xz
+        tar -xf sdk.tar.xz -C $THEOS/sdks
+        rm sdk.tar.xz
+
+    - name: Build Tweak
+      run: |
+        make -j$(sysctl -n hw.ncpu)
+
+    - name: Patch IPA
+      run: |
+        # Assume the user uploads ADManager.ipa to the root of the repo
+        if [ -f "ADManager.ipa" ]; then
+          chmod +x patch.sh
+          ./patch.sh ADManager.ipa
+        else
+          echo "ADManager.ipa not found! Skipping patch step."
+          echo "Please upload your IPA as 'ADManager.ipa' to the repository root."
+        fi
+
+    - name: Upload Patched IPA
+      uses: actions/upload-artifact@v3
+      if: success()
+      with:
+        name: ADManager_Patched
+        path: ADManager_Patched.ipa
+
