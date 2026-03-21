@@ -192,13 +192,54 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
-    popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@\n%@",
-        (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent, bundleID]);
+    // Diagnostic: show model state before calling restore
+    NSString *modelInfo = model
+        ? [NSString stringWithFormat:@"model: %@\nResponds: %@",
+           NSStringFromClass([model class]),
+           [model respondsToSelector:gRestoreSel] ? @"YES" : @"NO"]
+        : @"model: NIL — trying alternatives...";
+    popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@\n%@\n\n%@",
+        (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent, bundleID, modelInfo]);
 
-    if (model && [model respondsToSelector:gRestoreSel])
-        ((RestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, nil, nil);
-    else if ([self respondsToSelector:gRestoreSel])
-        ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
+    // Completion block to confirm success/failure
+    void (^completion)(BOOL, NSError *) = ^(BOOL success, NSError *err) {
+        popup(success ? @"ADM ✓ Done!" : @"ADM ✗ Failed",
+              success ? [NSString stringWithFormat:@"Restored!\n%@", chosen.lastPathComponent]
+                      : [NSString stringWithFormat:@"Error: %@", err.localizedDescription ?: @"unknown"]);
+    };
+
+    // Try 1: call on model (backupList ivar)
+    if (model && [model respondsToSelector:gRestoreSel]) {
+        ((RestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, nil, completion);
+        return;
+    }
+
+    // Try 2: call on self
+    if ([self respondsToSelector:gRestoreSel]) {
+        ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, completion);
+        return;
+    }
+
+    // Try 3: find BackupList class and call sharedInstance or alloc/init
+    Class blClass = NSClassFromString(@"BackupList");
+    if (blClass) {
+        // Try shared/default
+        id instance = nil;
+        for (NSString *m in @[@"shared", @"sharedInstance", @"defaultList", @"sharedManager"]) {
+            SEL s = NSSelectorFromString(m);
+            if ([blClass respondsToSelector:s]) {
+                instance = ((id(*)(id,SEL))objc_msgSend)(blClass, s);
+                break;
+            }
+        }
+        if (!instance) instance = [[blClass alloc] init];
+        if (instance && [instance respondsToSelector:gRestoreSel]) {
+            ((RestoreIMP)objc_msgSend)(instance, gRestoreSel, bundleID, chosen, nil, completion);
+            return;
+        }
+    }
+
+    popup(@"ADM ✗", @"Không tìm được restore method trên bất kỳ object nào!");
 }
 
 static void injectButton(id self, UITableView *tv) {
