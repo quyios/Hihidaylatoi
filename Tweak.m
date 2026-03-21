@@ -91,13 +91,21 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 // ---- Hook: intercept the REAL BackupList.restoreApp: call ----
 // This captures the app proxy and progress block used in normal restore flow
 static void adm_interceptRestore(id self, SEL _cmd, id appArg, NSString *path, id progress, id completion) {
-    // Silently capture ALL args — no UI to avoid conflict with restore flow
     gLastRestoreTarget  = self;
     gLastAppArg         = appArg;
     gLastProgressBlk    = progress;
-    gLastCompletionBlk  = completion; // ← capture exact completion block type
+    gLastCompletionBlk  = completion;
     // Call original normally
     if (gOrigRestoreApp) gOrigRestoreApp(self, _cmd, appArg, path, progress, completion);
+    // Delayed popup 5s after restore finishes
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        popup(@"ADM Captured Args", [NSString stringWithFormat:
+            @"appArg: [%@]\nprogress: [%@]\ncompletion: [%@]\npath: %@",
+            NSStringFromClass([appArg class]),
+            NSStringFromClass([[progress class] class]) ?: @"nil",
+            NSStringFromClass([[completion class] class]) ?: @"nil",
+            path.lastPathComponent]);
+    });
 }
 
 // ---- Button tap: A-Z rotation using captured args ----
@@ -129,8 +137,18 @@ static void adm_restoreNext(id self, SEL _cmd) {
     popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
         (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
 
-    // Replay with EXACT original completion block type — avoids block signature mismatch crash
-    gOrigRestoreApp(gLastRestoreTarget, gRestoreSel, gLastAppArg, chosen, gLastProgressBlk, gLastCompletionBlk);
+    // Use NSInvocation for type-safe call — avoids any calling convention mismatch
+    NSMethodSignature *sig = [gLastRestoreTarget methodSignatureForSelector:gRestoreSel];
+    if (!sig) { popup(@"ADM ✗", @"No method signature!"); return; }
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:gLastRestoreTarget];
+    [inv setSelector:gRestoreSel];
+    [inv setArgument:&gLastAppArg   atIndex:2];  // app proxy
+    [inv setArgument:&chosen        atIndex:3];  // backup path
+    id nilBlk = nil;
+    [inv setArgument:&nilBlk        atIndex:4];  // progress = nil
+    [inv setArgument:&gLastCompletionBlk atIndex:5];  // original completion block
+    [inv invoke];
 }
 
 // ---- Button injection ----
