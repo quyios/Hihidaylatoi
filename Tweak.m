@@ -1,6 +1,3 @@
-// ADManagerRotation - Pure ObjC runtime swizzle
-// Hooks setBackupList: to inject "Restore A-Z (N)" button
-
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -19,132 +16,123 @@ static const void *kIdxKey    = &kIdxKey;
 static const void *kBundleKey = &kBundleKey;
 
 static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
-    NSError *e = nil;
-        NSArray *all = [[NSFileManager defaultManager]
-                            contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:&e];
-                                if (!all) return @[];
-                                    NSString *pfx = [bundleID stringByAppendingString:@"_"];
-                                        NSMutableArray *r = [NSMutableArray array];
-                                            for (NSString *f in all)
-                                                    if ([f hasPrefix:pfx] && [f hasSuffix:@".adbk"])
-                                                                [r addObject:[@"/var/mobile/Library/ADManager" stringByAppendingPathComponent:f]];
-                                                                    [r sortUsingSelector:@selector(compare:)];
-                                                                        return r;
-                                                                        }
+    NSArray *all = [[NSFileManager defaultManager]
+                    contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
+    if (!all) return @[];
+    NSString *pfx = [bundleID stringByAppendingString:@"_"];
+    NSMutableArray *r = [NSMutableArray array];
+    for (NSString *f in all)
+        if ([f hasPrefix:pfx] && [f hasSuffix:@".adbk"])
+            [r addObject:[@"/var/mobile/Library/ADManager" stringByAppendingPathComponent:f]];
+    [r sortUsingSelector:@selector(compare:)];
+    return r;
+}
 
-                                                                        static NSString *getBundleID(id obj) {
-                                                                            for (NSString *k in @[@"bundleId", @"bundleID", @"appBundleId", @"bundleIdentifier"]) {
-                                                                                    @try {
-                                                                                                id v = [obj valueForKey:k];
-                                                                                                            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return v;
-                                                                                                                    } @catch (...) {}
-                                                                                                                        }
-                                                                                                                            return nil;
-                                                                                                                            }
-                                                                                                                            
-                                                                                                                            static void adm_restoreNext(id self, SEL _cmd) {
-                                                                                                                                NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
-                                                                                                                                    id model = nil;
-                                                                                                                                        @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
-                                                                                                                                            if (!bundleID) bundleID = getBundleID(model);
-                                                                                                                                                if (!bundleID) bundleID = getBundleID(self);
-                                                                                                                                                    if (!bundleID) return;
-                                                                                                                                                        objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                                                                                                                                                        
-                                                                                                                                                            NSArray<NSString *> *backups = sortedBackups(bundleID);
-                                                                                                                                                                if (backups.count == 0) return;
-                                                                                                                                                                
-                                                                                                                                                                    NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
-                                                                                                                                                                        NSInteger idx  = idxN ? idxN.integerValue : 0;
-                                                                                                                                                                            if (idx >= (NSInteger)backups.count) idx = 0;
-                                                                                                                                                                            
-                                                                                                                                                                                NSString *chosen = backups[(NSUInteger)idx];
-                                                                                                                                                                                    NSInteger next   = (idx + 1) % (NSInteger)backups.count;
-                                                                                                                                                                                        objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                                                                                                                                                                                            [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
-                                                                                                                                                                                                [[NSUserDefaults standardUserDefaults] synchronize];
-                                                                                                                                                                                                
-                                                                                                                                                                                                    UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
-                                                                                                                                                                                                        if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next + 1)];
-                                                                                                                                                                                                        
-                                                                                                                                                                                                            if (model && [model respondsToSelector:gRestoreSel])
-                                                                                                                                                                                                                    ((RestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, nil, nil);
-                                                                                                                                                                                                                        else if ([self respondsToSelector:gRestoreSel])
-                                                                                                                                                                                                                                ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
-                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                
-                                                                                                                                                                                                                                static void injectButton(id self) {
-                                                                                                                                                                                                                                    if (objc_getAssociatedObject(self, kBtnKey)) return;
-                                                                                                                                                                                                                                        id model = nil;
-                                                                                                                                                                                                                                            @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
-                                                                                                                                                                                                                                                NSString *bundleID = getBundleID(model) ?: getBundleID(self);
-                                                                                                                                                                                                                                                    if (bundleID) {
-                                                                                                                                                                                                                                                            objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                                                                                                                                                                                                                                                                    NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
-                                                                                                                                                                                                                                                                            objc_setAssociatedObject(self, kIdxKey, @(saved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                    NSNumber *n = objc_getAssociatedObject(self, kIdxKey) ?: @0;
-                                                                                                                                                                                                                                                                                        NSString *title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(n.integerValue + 1)];
-                                                                                                                                                                                                                                                                                        
-                                                                                                                                                                                                                                                                                            SEL actionSel = @selector(adm_restoreNext);
-                                                                                                                                                                                                                                                                                                if (![self respondsToSelector:actionSel])
-                                                                                                                                                                                                                                                                                                        class_addMethod([self class], actionSel, (IMP)adm_restoreNext, "v@:");
-                                                                                                                                                                                                                                                                                                        
-                                                                                                                                                                                                                                                                                                            UIBarButtonItem *btn = [[UIBarButtonItem alloc] initWithTitle:title style:UIBarButtonItemStylePlain target:self action:actionSel];
-                                                                                                                                                                                                                                                                                                                objc_setAssociatedObject(self, kBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                                                                                                                                                                                                                                                                                                                
-                                                                                                                                                                                                                                                                                                                    void (^inject)(void) = ^{
-                                                                                                                                                                                                                                                                                                                            UINavigationItem *nav = [(UIViewController *)self navigationItem];
-                                                                                                                                                                                                                                                                                                                                    NSMutableArray *items = [NSMutableArray arrayWithArray:nav.rightBarButtonItems ?: @[]];
-                                                                                                                                                                                                                                                                                                                                            [items filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(UIBarButtonItem *b, id _) {
-                                                                                                                                                                                                                                                                                                                                                        return ![b.title hasPrefix:@"Restore A-Z"];
-                                                                                                                                                                                                                                                                                                                                                                }]];
-                                                                                                                                                                                                                                                                                                                                                                        [items insertObject:btn atIndex:0];
-                                                                                                                                                                                                                                                                                                                                                                                nav.rightBarButtonItems = items;
-                                                                                                                                                                                                                                                                                                                                                                                    };
-                                                                                                                                                                                                                                                                                                                                                                                        if ([NSThread isMainThread]) inject();
-                                                                                                                                                                                                                                                                                                                                                                                            else dispatch_async(dispatch_get_main_queue(), inject);
-                                                                                                                                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                                                                                                                            
-                                                                                                                                                                                                                                                                                                                                                                                            static void adm_setBackupList(id self, SEL _cmd, id backupList) {
-                                                                                                                                                                                                                                                                                                                                                                                                if (gOrigSetBL) gOrigSetBL(self, _cmd, backupList);
-                                                                                                                                                                                                                                                                                                                                                                                                    @try { injectButton(self); } @catch (...) {}
-                                                                                                                                                                                                                                                                                                                                                                                                    }
-                                                                                                                                                                                                                                                                                                                                                                                                    
-                                                                                                                                                                                                                                                                                                                                                                                                    static void adm_didSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-                                                                                                                                                                                                                                                                                                                                                                                                        if (gOrigDidSelect) gOrigDidSelect(self, _cmd, tv, ip);
-                                                                                                                                                                                                                                                                                                                                                                                                            @try { if (!objc_getAssociatedObject(self, kBtnKey)) injectButton(self); } @catch (...) {}
-                                                                                                                                                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                                                                                                                                            
-                                                                                                                                                                                                                                                                                                                                                                                                            __attribute__((constructor))
-                                                                                                                                                                                                                                                                                                                                                                                                            static void ADMRotationInit(void) {
-                                                                                                                                                                                                                                                                                                                                                                                                                @autoreleasepool {
-                                                                                                                                                                                                                                                                                                                                                                                                                        gRestoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
-                                                                                                                                                                                                                                                                                                                                                                                                                                unsigned int count = 0;
-                                                                                                                                                                                                                                                                                                                                                                                                                                        Class *classes = objc_copyClassList(&count);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                if (!classes) return;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        Class vcClass = nil;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                for (unsigned int i = 0; i < count; i++) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                            Class cls = classes[i];
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        if (class_getInstanceMethod(cls, NSSelectorFromString(@"DeleteEntry:"))) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        vcClass = cls; break;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    free(classes);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            if (!vcClass) return;
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    class_addMethod(vcClass, @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            SEL setBLSel = NSSelectorFromString(@"setBackupList:");
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    Method setBLM = class_getInstanceMethod(vcClass, setBLSel);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            if (setBLM) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        gOrigSetBL = (SetBLIMP)method_getImplementation(setBLM);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    method_setImplementation(setBLM, (IMP)adm_setBackupList);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    SEL didSelectSel = @selector(tableView:didSelectRowAtIndexPath:);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            Method didSelectM = class_getInstanceMethod(vcClass, didSelectSel);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    if (didSelectM) {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                gOrigDidSelect = (DidSelectIMP)method_getImplementation(didSelectM);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            method_setImplementation(didSelectM, (IMP)adm_didSelect);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+static NSString *getBundleID(id obj) {
+    for (NSString *k in @[@"bundleId", @"bundleID", @"appBundleId", @"bundleIdentifier"]) {
+        @try {
+            id v = [obj valueForKey:k];
+            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return v;
+        } @catch (...) {}
+    }
+    return nil;
+}
+
+static void adm_restoreNext(id self, SEL _cmd) {
+    NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
+    id model = nil;
+    @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
+    if (!bundleID) bundleID = getBundleID(model);
+    if (!bundleID) bundleID = getBundleID(self);
+    if (!bundleID) return;
+    objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NSArray<NSString *> *backups = sortedBackups(bundleID);
+    if (backups.count == 0) return;
+
+    NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
+    NSInteger idx  = idxN ? idxN.integerValue : 0;
+    if (idx >= (NSInteger)backups.count) idx = 0;
+
+    NSString *chosen = backups[(NSUInteger)idx];
+    NSInteger next   = (idx + 1) % (NSInteger)backups.count;
+    objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+
+    UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
+    if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next + 1)];
+
+    if (model && [model respondsToSelector:gRestoreSel])
+        ((RestoreIMP)objc_msgSend)(model, gRestoreSel, bundleID, chosen, nil, nil);
+    else if ([self respondsToSelector:gRestoreSel])
+        ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
+}
+
+static void injectButton(id self) {
+    if (objc_getAssociatedObject(self, kBtnKey)) return;
+    id model = nil;
+    @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
+    NSString *bundleID = getBundleID(model) ?: getBundleID(self);
+    if (bundleID) {
+        objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
+        objc_setAssociatedObject(self, kIdxKey, @(saved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSNumber *n = objc_getAssociatedObject(self, kIdxKey) ?: @0;
+    NSString *title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(n.integerValue + 1)];
+
+    SEL actionSel = @selector(adm_restoreNext);
+    if (![self respondsToSelector:actionSel])
+        class_addMethod([self class], actionSel, (IMP)adm_restoreNext, "v@:");
+
+    UIBarButtonItem *btn = [[UIBarButtonItem alloc] initWithTitle:title
+                                                           style:UIBarButtonItemStylePlain
+                                                          target:self action:actionSel];
+    objc_setAssociatedObject(self, kBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    void (^inject)(void) = ^{
+        UINavigationItem *nav = [(UIViewController *)self navigationItem];
+        NSMutableArray *items = [NSMutableArray arrayWithArray:nav.rightBarButtonItems ?: @[]];
+        [items filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(UIBarButtonItem *b, id _) {
+            return ![b.title hasPrefix:@"Restore A-Z"];
+        }]];
+        [items insertObject:btn atIndex:0];
+        nav.rightBarButtonItems = items;
+    };
+    if ([NSThread isMainThread]) inject();
+    else dispatch_async(dispatch_get_main_queue(), inject);
+}
+
+static void adm_setBackupList(id self, SEL _cmd, id backupList) {
+    if (gOrigSetBL) gOrigSetBL(self, _cmd, backupList);
+    @try { injectButton(self); } @catch (...) {}
+}
+
+static void adm_didSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (gOrigDidSelect) gOrigDidSelect(self, _cmd, tv, ip);
+    @try { if (!objc_getAssociatedObject(self, kBtnKey)) injectButton(self); } @catch (...) {}
+}
+
+__attribute__((constructor))
+static void ADMRotationInit(void) {
+    @autoreleasepool {
+        gRestoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
+        unsigned int count = 0;
+        Class *classes = objc_copyClassList(&count);
+        if (!classes) return;
+        Class vcClass = nil;
+        for (unsigned int i = 0; i < count; i++) {
+            if (class_getInstanceMethod(classes[i], NSSelectorFromString(@"DeleteEntry:"))) {
+                vcClass = classes[i]; break;
+            }
+        }
+        free(classes);
+        if (!vcClass) return;
+        class_addMethod(vcClass, @selector(adm_restoreNext), (IMP)adm_restoreNext, "v@:");
+        Method m1 = class_getInstanceMethod(vcClass, NSSelectorFromString(@"setBackupList:"));
+        if (m1) { gOrigSetBL = (SetBLIMP)method_getImplementation(m1); method_setImplementation(m1, (IMP)adm_setBackupList); }
+        Method m2 = class_getInstanceMethod(vcClass, @selector(tableView:didSelectRowAtIndexPath:));
+        if (m2) { gOrigDidSelect = (DidSelectIMP)method_getImplementation(m2); method_setImplementation(m2, (IMP)adm_didSelect); }
+    }
+}
