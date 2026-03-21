@@ -60,32 +60,15 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
-// ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
-static BOOL dismissSheetInView(UIView *view) {
-    if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
-        UIActionSheet *sheet = (UIActionSheet *)view;
-        // Use button index 3 (Restore AppData), NOT cancel — cancel handler conflicts with restore
-        // delegate = nil ensures NO delegate callbacks fire at all
-        sheet.delegate = nil;
-        [sheet dismissWithClickedButtonIndex:3 animated:NO];
-        return YES;
+// ---- Recursively find UIActionSheet in view tree ----
+static UIActionSheet *findActionSheet(UIView *view) {
+    if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)])
+        return (UIActionSheet *)view;
+    for (UIView *sub in view.subviews) {
+        UIActionSheet *found = findActionSheet(sub);
+        if (found) return found;
     }
-    for (UIView *sub in view.subviews.copy)
-        if (dismissSheetInView(sub)) return YES;
-    return NO;
-}
-
-
-static void dismissActionSheet(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        for (UIWindow *win in UIApplication.sharedApplication.windows)
-            if (dismissSheetInView(win)) return;
-        // Fallback
-        UIWindow *kw = UIApplication.sharedApplication.keyWindow;
-        UIViewController *top = kw.rootViewController;
-        while (top.presentedViewController) top = top.presentedViewController;
-        [top dismissViewControllerAnimated:YES completion:nil];
-    });
+    return nil;
 }
 
 // ---- A-Z button tap ----
@@ -100,7 +83,6 @@ static void adm_restoreNext(id self, SEL _cmd) {
     NSInteger idx = idxN ? idxN.integerValue : 0;
     if (idx >= (NSInteger)backups.count) idx = 0;
 
-    NSString *chosen = backups[(NSUInteger)idx];
     NSInteger next = (idx + 1) % (NSInteger)backups.count;
     objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
@@ -113,7 +95,7 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UITableView *tv = nil;
     @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
 
-    // Find the row for chosen backup (table: newest→oldest, our array: oldest→newest)
+    // Find the row index for chosen backup (table: newest→oldest, our array: oldest→newest)
     NSIndexPath *targetIP = nil;
     if (tv) {
         for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
@@ -134,13 +116,26 @@ static void adm_restoreNext(id self, SEL _cmd) {
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Call restore after action sheet is set up, then dismiss sheet silently
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        SEL restoreSel = NSSelectorFromString(@"restore");
-        if ([(id)self respondsToSelector:restoreSel])
-            ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
-        dismissActionSheet();
-    });
+    // Poll until UIActionSheet appears, then auto-tap "Restore AppData" (button 3)
+    // KEEP delegate intact — lets VC handle HUD show/hide and restore completion naturally
+    __block int retries = 0;
+    __block void (^tapRestore)(void);
+    tapRestore = ^{
+        UIActionSheet *sheet = nil;
+        for (UIWindow *win in UIApplication.sharedApplication.windows) {
+            sheet = findActionSheet(win);
+            if (sheet) break;
+        }
+        if (sheet) {
+            // Auto-tap "Restore AppData" via delegate — VC manages HUD lifecycle
+            [sheet dismissWithClickedButtonIndex:3 animated:NO];
+        } else if (++retries < 20) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), tapRestore);
+        }
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), tapRestore);
 }
 
 // ---- Inject button ----
