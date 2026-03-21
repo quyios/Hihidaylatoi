@@ -27,14 +27,12 @@ if [ ! -f "./insert_dylib" ]; then
 fi
 
 echo "Injecting dylib..."
-./insert_dylib --inplace --all-yes "@executable_path/$DYLIB_NAME" "$BINARY_PATH"
+# --no-strip-codesig: preserve original binary signature for TrollStore
+./insert_dylib --inplace --all-yes --no-strip-codesig "@executable_path/$DYLIB_NAME" "$BINARY_PATH"
 
 echo "Copying dylib into app bundle..."
 cp "$DYLIB_NAME" "Payload/ADManager.app/"
-
-echo "Re-signing injected dylib..."
-codesign -s - --force "Payload/ADManager.app/$DYLIB_NAME"
-# NOTE: Do NOT re-sign ADManager binary - TrollStore handles that on install
+# Do NOT codesign anything here - TrollStore re-signs the whole app on install
 
 echo "Repackaging IPA..."
 zip -qry "ADManager_Patched.ipa" Payload
