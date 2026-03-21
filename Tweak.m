@@ -64,12 +64,12 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 
 static void showDebug(NSString *msg) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"ADM Debug"
-                                                        message:msg
-                                                       delegate:nil
-                                              cancelButtonTitle:@"OK"
-                                              otherButtonTitles:nil];
-        [alert show];
+        UIAlertView *a = [[UIAlertView alloc] initWithTitle:@"DEBUG"
+                                                    message:msg
+                                                   delegate:nil
+                                          cancelButtonTitle:@"OK"
+                                          otherButtonTitles:nil];
+        [a show];
     });
 }
 
@@ -84,11 +84,13 @@ static void dismissActionSheet(void) {
         while (top.presentedViewController)
             top = top.presentedViewController;
 
-        // ✅ Chỉ dismiss nếu là UIAlertController
+        // 👉 debug class
+        showDebug([NSString stringWithFormat:@"Top VC: %@", NSStringFromClass([top class])]);
+
         if ([top isKindOfClass:NSClassFromString(@"UIAlertController")]) {
             UIAlertController *ac = (UIAlertController *)top;
 
-            NSLog(@"[ADM] Dismiss UIAlertController style: %ld", (long)ac.preferredStyle);
+            showDebug([NSString stringWithFormat:@"Style: %ld", (long)ac.preferredStyle]);
 
             if (ac.preferredStyle == UIAlertControllerStyleActionSheet) {
                 [ac dismissViewControllerAnimated:NO completion:nil];
@@ -97,8 +99,7 @@ static void dismissActionSheet(void) {
             return;
         }
 
-        // ❌ Không phải alert → bỏ qua
-        NSLog(@"[ADM] Top VC: %@", NSStringFromClass([top class]));
+        showDebug(@"Không phải UIAlertController → skip");
 
     });
 }
