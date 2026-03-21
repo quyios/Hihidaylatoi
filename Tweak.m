@@ -88,6 +88,11 @@ static void dismissActionSheet(void) {
         if ([top isKindOfClass:NSClassFromString(@"UIAlertController")]) {
             UIAlertController *ac = (UIAlertController *)top;
 
+            if (ac.preferredStyle == UIAlertControllerStyleActionSheet) {
+                [ac dismissViewControllerAnimated:NO completion:nil];
+            }
+        }
+
             // Debug
             NSLog(@"[ADM] Dismiss UIAlertController style: %ld", (long)ac.preferredStyle);
 
