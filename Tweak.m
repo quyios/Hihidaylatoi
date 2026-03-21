@@ -72,35 +72,42 @@ static BOOL dismissSheetInView(UIView *view) {
     return NO;
 }
 
-// ---- Final Cleanup & Restart ----
+// ---- Smart Cleanup & Restart (Waits for "Done" Alert) ----
 static void performFinalCleanup(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Step 1: Dismiss the initial action sheet immediately
+    for (UIWindow *win in UIApplication.sharedApplication.windows) {
+        dismissSheetInView(win);
+    }
+
+    // Step 2: Poll every 1s to see if the "Done" alert has appeared
+    __block int secondsWaiting = 0;
+    __block void (^pollCompletion)(void);
+    pollCompletion = ^{
         UIApplication *app = [UIApplication sharedApplication];
         UIWindow *kw = app.keyWindow ?: app.windows.firstObject;
+        UIViewController *top = kw.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
 
-        // 1. Tắt mọi UIActionSheet
-        for (UIWindow *win in app.windows) dismissSheetInView(win);
+        // If something is presented (the completion Alert), wait and exit
+        if (top != kw.rootViewController) {
+            // Force reset interaction just in case
+            while (app.isIgnoringInteractionEvents) [app endIgnoringInteractionEvents];
+            for (UIWindow *win in app.windows) win.userInteractionEnabled = YES;
 
-        // 2. Tắt TOÀN BỘ Modal từ root (UIAlertController, Popup Done, etc.)
-        [kw.rootViewController dismissViewControllerAnimated:NO completion:nil];
-
-        // 3. Force Reset trạng thái tương tác
-        while (app.isIgnoringInteractionEvents) [app endIgnoringInteractionEvents];
-        for (UIWindow *win in app.windows) {
-            win.userInteractionEnabled = YES;
-            for (UIView *v in win.subviews) {
-                NSString *cn = NSStringFromClass([v class]);
-                if ([cn containsString:@"Dimming"] || [cn containsString:@"ActionSheet"])
-                    [v removeFromSuperview];
-            }
+            // Wait 2s for file finalization, then exit
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                exit(0);
+            });
+        } else if (++secondsWaiting < 600) { // Max wait 10 mins for heavy backups
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), pollCompletion);
         }
-
-        // Tự động khởi động lại sau 3 giây để làm mới trạng thái
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            exit(0);
-        });
-    });
+    };
+    
+    // Start polling after a 2s delay to give the restore process time to start
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), pollCompletion);
 }
+
+
 
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
