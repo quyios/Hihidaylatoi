@@ -98,28 +98,57 @@ static void adm_restoreNext(id self, SEL _cmd) {
     // Set selectedBackup on the VC (the VC uses this internally for restore)
     @try { [self setValue:chosen forKey:@"selectedBackup"]; } @catch (...) {}
 
-    // Set selected backup on VC (confirmed method: setSelectedBackup:)
-    SEL setSelSel = NSSelectorFromString(@"setSelectedBackup:");
-    if ([self respondsToSelector:setSelSel])
-        ((void(*)(id,SEL,id))objc_msgSend)(self, setSelSel, chosen);
-    else
-        @try { [self setValue:chosen forKey:@"selectedBackup"]; } @catch (...) {}
+    // Get table view from VC
+    UITableView *tv = nil;
+    @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
 
-    // Also set actionSheetItem (may be what restore reads)
-    SEL setItemSel = NSSelectorFromString(@"setActionSheetItem:");
-    if ([self respondsToSelector:setItemSel])
-        ((void(*)(id,SEL,id))objc_msgSend)(self, setItemSel, chosen);
-
-    // Call restore directly (confirmed method: restore)
-    SEL restoreSel = NSSelectorFromString(@"restore");
-    if ([self respondsToSelector:restoreSel]) {
-        popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
-            (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
-        ((void(*)(id,SEL))objc_msgSend)(self, restoreSel);
-    } else {
-        popup(@"ADM ✗", @"'restore' method not found!");
+    // Find which section has the backup rows (section where rowCount == backups.count)
+    NSIndexPath *targetIP = nil;
+    if (tv) {
+        for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
+            NSInteger rows = [tv numberOfRowsInSection:s];
+            if (rows == (NSInteger)backups.count) {
+                // Backups sorted newest→oldest in table, our array is oldest→newest
+                NSInteger rowInSection = (NSInteger)backups.count - 1 - idx;
+                if (rowInSection >= 0 && rowInSection < rows)
+                    targetIP = [NSIndexPath indexPathForRow:rowInSection inSection:s];
+                break;
+            }
+        }
     }
+
+    if (!targetIP) {
+        popup(@"ADM ✗", [NSString stringWithFormat:@"Cannot find row for backup #%ld\nTry it manually first.", (long)(idx+1)]);
+        return;
+    }
+
+    // Simulate row tap → VC sets actionSheetItem + shows action sheet with correct types
+    typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
+    SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
+    DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
+    if (didSel) didSel(self, didSelSel, tv, targetIP);
+
+    // After a short delay: dismiss the action sheet, then call restore
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIViewController *top = (UIViewController *)self;
+        while (top.presentedViewController) top = top.presentedViewController;
+        void (^doRestore)(void) = ^{
+            SEL restoreSel = NSSelectorFromString(@"restore");
+            if ([(id)self respondsToSelector:restoreSel]) {
+                popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
+                    (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
+                ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
+            } else {
+                popup(@"ADM ✗", @"restore not found");
+            }
+        };
+        if ([top isKindOfClass:[UIAlertController class]])
+            [top dismissViewControllerAnimated:NO completion:doRestore];
+        else
+            doRestore();
+    });
 }
+
 
 
 
