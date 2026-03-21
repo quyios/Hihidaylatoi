@@ -128,32 +128,41 @@ static void adm_restoreNext(id self, SEL _cmd) {
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Grab and invoke the Restore action before animation starts (0.01s = invisible)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Poll until action sheet is presented, then invoke Restore action invisibly
+    __block int retries = 0;
+    __block void (^checkAndRestore)(void);
+    checkAndRestore = ^{
         UIViewController *top = (UIViewController *)self;
         while (top.presentedViewController) top = top.presentedViewController;
-        if (![top isKindOfClass:[UIAlertController class]]) return;
-        UIAlertController *ac = (UIAlertController *)top;
-        // Find "Restore" action (handles any localization)
-        UIAlertAction *restoreAction = nil;
-        for (UIAlertAction *action in ac.actions) {
-            NSString *t = action.title.lowercaseString;
-            if (action.style != UIAlertActionStyleCancel &&
-                ([t containsString:@"restore"] || [t containsString:@"khôi"]))
-                { restoreAction = action; break; }
-        }
-        // Fallback: use the LAST non-cancel action
-        if (!restoreAction)
-            for (UIAlertAction *action in ac.actions.reverseObjectEnumerator)
-                if (action.style != UIAlertActionStyleCancel) { restoreAction = action; break; }
+        if ([top isKindOfClass:[UIAlertController class]]) {
+            UIAlertController *ac = (UIAlertController *)top;
+            UIAlertAction *restoreAction = nil;
+            for (UIAlertAction *action in ac.actions) {
+                NSString *t = action.title.lowercaseString;
+                if (action.style != UIAlertActionStyleCancel &&
+                    ([t containsString:@"restore"] || [t containsString:@"khôi"]))
+                    { restoreAction = action; break; }
+            }
+            if (!restoreAction)
+                for (UIAlertAction *action in ac.actions.reverseObjectEnumerator)
+                    if (action.style != UIAlertActionStyleCancel) { restoreAction = action; break; }
 
-        void (^handler)(UIAlertAction *) = nil;
-        if (restoreAction) @try { handler = [restoreAction valueForKey:@"handler"]; } @catch (...) {}
-        [top dismissViewControllerAnimated:NO completion:^{
-            if (handler) handler(restoreAction);
-        }];
-    });
+            void (^handler)(UIAlertAction *) = nil;
+            if (restoreAction) @try { handler = [restoreAction valueForKey:@"handler"]; } @catch (...) {}
+            // Dismiss immediately (no animation = invisible)
+            [top dismissViewControllerAnimated:NO completion:^{
+                if (handler) handler(restoreAction);
+            }];
+        } else if (++retries < 20) {
+            // Not yet presented — try again in 50ms (max 1s total)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), checkAndRestore);
+        }
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), checkAndRestore);
 }
+
 
 
 
