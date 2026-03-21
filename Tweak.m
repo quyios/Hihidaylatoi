@@ -60,7 +60,23 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
+static void dismissActionSheet(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 
+        for (UIWindow *win in UIApplication.sharedApplication.windows) {
+            for (UIView *view in win.subviews) {
+
+                if ([view isKindOfClass:NSClassFromString(@"UIActionSheet")]) {
+                    UIActionSheet *sheet = (UIActionSheet *)view;
+                    [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
+                    return;
+                }
+
+            }
+        }
+
+    });
+}
 
 
 // ---- A-Z button tap ----
