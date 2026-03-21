@@ -98,11 +98,11 @@ static void dismissActionSheet(void) {
 
         // OPTION RESTART: Tự khởi động lại sau 5 giây để tiếp tục rotation nếu muốn
         // Bạn có thể bỏ comment dòng dưới nếu muốn app tự reset sau khi restore xong
-        /*
+        
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             exit(0);
         });
-        */
+        
     });
 }
 
