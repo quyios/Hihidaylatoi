@@ -19,10 +19,7 @@ echo "Injecting dylib..."
 if [ ! -f "./insert_dylib" ]; then
     echo "Compiling insert_dylib from source..."
     git clone https://github.com/Tyilo/insert_dylib.git
-    cd insert_dylib
-    xcodebuild -quiet
-    cp build/Release/insert_dylib ../insert_dylib
-    cd ..
+    clang insert_dylib/insert_dylib/main.c -o insert_dylib
     rm -rf insert_dylib
     chmod +x insert_dylib
 fi
