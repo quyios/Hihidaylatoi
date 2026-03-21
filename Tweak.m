@@ -133,8 +133,12 @@ static NSString *findBundleID(id vc, id model, UITableView *tv) {
         NSString *key = [iname hasPrefix:@"_"] ? [iname substringFromIndex:1] : iname;
         @try {
             id val = [vc valueForKey:key];
-            if (val) [dump appendFormat:@"%@: [%@] %@\n", iname, NSStringFromClass([val class]),
-                      [[NSString stringWithFormat:@"%@",val] substringToIndex:MIN(50,[(NSString*)[NSString stringWithFormat:@"%@",val] length])]];
+            if (val) {
+                NSString *desc = [NSString stringWithFormat:@"%@", val];
+                NSUInteger len = desc.length > 50 ? 50 : desc.length;
+                [dump appendFormat:@"%@: [%@] %@\n", iname, NSStringFromClass([val class]),
+                 [desc substringToIndex:len]];
+            }
         } @catch (...) {}
     }
     free(ivars2);
