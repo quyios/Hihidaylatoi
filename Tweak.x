@@ -1,130 +1,114 @@
+// ADManagerRotation - Pure Objective-C runtime swizzle
+// No Substrate, No Logos, No external dependencies.
+// Works with TrollStore out of the box.
+
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
-// State key prefixes
-static NSString * const kRotationIndexKey = @"ADMRotationIndex_";
-static NSString * const kLastPathKey     = @"ADMLastPath_";
+// ---- Rotation logic ----
+typedef void (*RestoreIMP)(id, SEL, NSString *, NSString *, id, id);
+static RestoreIMP original_restoreApp = NULL;
 
-// Core rotation logic - shared by both hook implementations
-static void performRotationWithOriginal(id self_obj, SEL _cmd, NSString *bundleID, NSString *originalPath, id progress, id completion, void (^callOriginal)(NSString *)) {
+static void swizzled_restoreApp(id self, SEL _cmd, NSString *bundleID, NSString *path, id progress, id completion) {
     @try {
+        NSLog(@"[ADMRotation] Intercepted restoreApp for: %@", bundleID);
+
         NSFileManager *fm = [NSFileManager defaultManager];
         NSString *dir = @"/var/mobile/Library/ADManager";
 
         NSError *err = nil;
-        NSArray *all = [fm contentsOfDirectoryAtPath:dir error:&err];
-        if (err || !all) {
-            NSLog(@"[ADMRotation] Cannot read dir: %@", err);
-            callOriginal(originalPath);
+        NSArray *allFiles = [fm contentsOfDirectoryAtPath:dir error:&err];
+        if (err || !allFiles) {
+            NSLog(@"[ADMRotation] Cannot read dir, falling back. Error: %@", err);
+            if (original_restoreApp) original_restoreApp(self, _cmd, bundleID, path, progress, completion);
             return;
         }
 
-        NSString *prefix = [bundleID stringByAppendingString:@"_"];
+        NSString *pfx = [bundleID stringByAppendingString:@"_"];
         NSMutableArray<NSString *> *backups = [NSMutableArray array];
-        for (NSString *f in all) {
-            if ([f hasPrefix:prefix] && [f hasSuffix:@".adbk"]) {
+        for (NSString *f in allFiles) {
+            if ([f hasPrefix:pfx] && [f hasSuffix:@".adbk"]) {
                 [backups addObject:[dir stringByAppendingPathComponent:f]];
             }
         }
-
         [backups sortUsingSelector:@selector(compare:)];
-        NSLog(@"[ADMRotation] Found %lu backups for %@", (unsigned long)backups.count, bundleID);
+        NSLog(@"[ADMRotation] %lu backups found for %@", (unsigned long)backups.count, bundleID);
 
         if (backups.count <= 1) {
-            callOriginal(originalPath);
+            if (original_restoreApp) original_restoreApp(self, _cmd, bundleID, path, progress, completion);
             return;
         }
 
         NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-        NSString *lastPathKey  = [kLastPathKey stringByAppendingString:bundleID];
-        NSString *indexKey     = [kRotationIndexKey stringByAppendingString:bundleID];
-        NSString *lastPath     = [ud stringForKey:lastPathKey];
+        NSString *idxKey      = [@"ADMIdx_" stringByAppendingString:bundleID];
+        NSString *lastPathKey = [@"ADMLast_" stringByAppendingString:bundleID];
+        NSString *lastPath    = [ud stringForKey:lastPathKey];
 
-        NSInteger idx = [ud integerForKey:indexKey];
+        NSInteger idx = [ud integerForKey:idxKey];
 
-        // Reset if user selected a different backup manually
-        if (lastPath && ![originalPath isEqualToString:lastPath]) {
-            NSUInteger found = [backups indexOfObject:originalPath];
+        if (lastPath && ![path isEqualToString:lastPath]) {
+            // User picked a different backup manually - reset rotation from there
+            NSUInteger found = [backups indexOfObject:path];
             idx = (found != NSNotFound) ? (NSInteger)((found + 1) % backups.count) : 0;
-            NSLog(@"[ADMRotation] Manual change detected, resetting rotation to idx %ld", (long)idx);
+            NSLog(@"[ADMRotation] Manual change detected. Resetting idx to %ld", (long)idx);
         }
 
-        // Clamp index just in case array shrank
         if (idx >= (NSInteger)backups.count) idx = 0;
 
-        NSString *chosenPath = backups[idx];
-        NSLog(@"[ADMRotation] Rotating to idx=%ld path=%@", (long)idx, chosenPath);
+        NSString *chosen = backups[(NSUInteger)idx];
+        NSLog(@"[ADMRotation] Rotating to idx=%ld: %@", (long)idx, chosen);
 
-        // Save state
-        [ud setObject:chosenPath forKey:lastPathKey];
-        [ud setInteger:(idx + 1) % backups.count forKey:indexKey];
+        [ud setObject:chosen forKey:lastPathKey];
+        [ud setInteger:(idx + 1) % (NSInteger)backups.count forKey:idxKey];
         [ud synchronize];
 
-        callOriginal(chosenPath);
+        if (original_restoreApp) {
+            original_restoreApp(self, _cmd, bundleID, chosen, progress, completion);
+        }
 
     } @catch (NSException *e) {
-        NSLog(@"[ADMRotation] Exception: %@", e);
-        callOriginal(originalPath);
+        NSLog(@"[ADMRotation] Exception: %@. Falling back to original.", e);
+        if (original_restoreApp) original_restoreApp(self, _cmd, bundleID, path, progress, completion);
     }
 }
 
-// --- Hook group for BackupList (model class, preferred) ---
-%group HookBackupList
+// ---- Swizzle helper ----
+static BOOL swizzleClass(NSString *className, SEL originalSel) {
+    Class cls = NSClassFromString(className);
+    if (!cls) {
+        NSLog(@"[ADMRotation] Class '%@' not found.", className);
+        return NO;
+    }
 
-%hook BackupList
+    Method origMethod = class_getInstanceMethod(cls, originalSel);
+    if (!origMethod) {
+        NSLog(@"[ADMRotation] Method not found in '%@'.", className);
+        return NO;
+    }
 
-- (void)restoreApp:(NSString *)bundleID fromPathBackup:(NSString *)path progress:(id)progress withCompletion:(id)completion {
-    NSLog(@"[ADMRotation] BackupList hook triggered");
-    performRotationWithOriginal(self, _cmd, bundleID, path, progress, completion, ^(NSString *resolved) {
-        %orig(bundleID, resolved, progress, completion);
-    });
+    // Save original IMP
+    original_restoreApp = (RestoreIMP)method_getImplementation(origMethod);
+
+    // Replace with our swizzled version
+    method_setImplementation(origMethod, (IMP)swizzled_restoreApp);
+
+    NSLog(@"[ADMRotation] Successfully swizzled %@ on %@", NSStringFromSelector(originalSel), className);
+    return YES;
 }
 
-%end
-
-%end // HookBackupList
-
-
-// --- Fallback: Hook the UI view controller if BackupList hook doesn't fire ---
-%group HookBackupInfoVC
-
-%hook BackupInfoTableViewController
-
-- (void)restoreApp:(NSString *)bundleID fromPathBackup:(NSString *)path progress:(id)progress withCompletion:(id)completion {
-    NSLog(@"[ADMRotation] BackupInfoTableViewController hook triggered");
-    performRotationWithOriginal(self, _cmd, bundleID, path, progress, completion, ^(NSString *resolved) {
-        %orig(bundleID, resolved, progress, completion);
-    });
-}
-
-%end
-
-%end // HookBackupInfoVC
-
-
-// --- Constructor: safe, lazy initialization ---
-%ctor {
+// ---- Constructor ----
+__attribute__((constructor))
+static void ADMRotationInit(void) {
     @autoreleasepool {
-        NSLog(@"[ADMRotation] Dylib loaded into process: %@", NSProcessInfo.processInfo.processName);
+        NSLog(@"[ADMRotation] Dylib loaded into: %@", NSProcessInfo.processInfo.processName);
 
-        BOOL hooked = NO;
+        SEL restoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
 
-        Class cls = NSClassFromString(@"BackupList");
-        if (cls) {
-            NSLog(@"[ADMRotation] Found BackupList - activating primary hook");
-            %init(HookBackupList, BackupList = cls);
-            hooked = YES;
-        }
-
-        Class cls2 = NSClassFromString(@"BackupInfoTableViewController");
-        if (cls2) {
-            NSLog(@"[ADMRotation] Found BackupInfoTableViewController - activating fallback hook");
-            %init(HookBackupInfoVC, BackupInfoTableViewController = cls2);
-            hooked = YES;
-        }
-
-        if (!hooked) {
-            NSLog(@"[ADMRotation] WARNING: Neither target class found. No hooks applied.");
+        // Try primary class first
+        if (!swizzleClass(@"BackupList", restoreSel)) {
+            // Fallback to view controller
+            swizzleClass(@"BackupInfoTableViewController", restoreSel);
         }
     }
 }
