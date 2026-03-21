@@ -14,7 +14,10 @@ fi
 echo "Unzipping IPA..."
 unzip -q "$IPA_NAME"
 
-echo "Injecting dylib..."
+echo "Fixing permissions and removing old signatures..."
+chmod +x "$BINARY_PATH"
+# Remove old signature to let TrollStore handle it cleanly
+codesign --remove-signature "Payload/ADManager.app" 2>/dev/null || true
 # Compile insert_dylib if not present
 if [ ! -f "./insert_dylib" ]; then
     echo "Compiling insert_dylib from source..."
@@ -44,7 +47,7 @@ codesign -s - --force "Payload/ADManager.app/$DYLIB_NAME"
 
 echo "Repackaging IPA..."
 NEW_IPA="ADManager_Patched.ipa"
-zip -qr "$NEW_IPA" Payload
+zip -qry "$NEW_IPA" Payload
 
 echo "Done! Patched IPA: $NEW_IPA"
 rm -rf Payload
