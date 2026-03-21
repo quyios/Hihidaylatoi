@@ -62,9 +62,8 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 
 // ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
 static BOOL dismissSheetInView(UIView *view) {
-    NSString *cls = NSStringFromClass([view class]);
-    if ([cls containsString:@"ActionSheet"] || [cls containsString:@"_UIAlertController"]) {
-        // Remove without triggering delegate callbacks (avoids UI freeze)
+    // Detect UIActionSheet via selector (reliable), remove without triggering delegate (no UI freeze)
+    if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
         [view removeFromSuperview];
         return YES;
     }
@@ -72,6 +71,7 @@ static BOOL dismissSheetInView(UIView *view) {
         if (dismissSheetInView(sub)) return YES;
     return NO;
 }
+
 
 static void dismissActionSheet(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
