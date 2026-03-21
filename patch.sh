@@ -32,9 +32,9 @@ echo "Injecting dylib..."
 echo "Copying dylib into app bundle..."
 cp "$DYLIB_NAME" "Payload/ADManager.app/"
 
-echo "Re-signing modified components..."
+echo "Re-signing injected dylib..."
 codesign -s - --force "Payload/ADManager.app/$DYLIB_NAME"
-codesign -s - --force "Payload/ADManager.app/ADManager"
+# NOTE: Do NOT re-sign ADManager binary - TrollStore handles that on install
 
 echo "Repackaging IPA..."
 zip -qry "ADManager_Patched.ipa" Payload
