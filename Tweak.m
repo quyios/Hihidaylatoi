@@ -142,18 +142,18 @@ static void adm_restoreNext(id self, SEL _cmd) {
     popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
         (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
 
-    // Use NSInvocation for type-safe call — avoids any calling convention mismatch
+    // Use NSInvocation for type-safe call
     NSMethodSignature *sig = [gLastRestoreTarget methodSignatureForSelector:gRestoreSel];
     if (!sig) { popup(@"ADM ✗", @"No method signature!"); return; }
     NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
     [inv setTarget:gLastRestoreTarget];
     [inv setSelector:gRestoreSel];
-    [inv setArgument:&gLastAppArg   atIndex:2];  // app proxy
-    [inv setArgument:&chosen        atIndex:3];  // backup path
-    id nilBlk = nil;
-    [inv setArgument:&nilBlk        atIndex:4];  // progress = nil
+    [inv setArgument:&gLastAppArg        atIndex:2];  // ApplicationItem
+    [inv setArgument:&chosen             atIndex:3];  // backup path
+    [inv setArgument:&gLastProgressBlk   atIndex:4];  // original progress block (not nil!)
     [inv setArgument:&gLastCompletionBlk atIndex:5];  // original completion block
     [inv invoke];
+
 }
 
 // ---- Button injection ----
