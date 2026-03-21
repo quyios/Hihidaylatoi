@@ -8,7 +8,7 @@ TWEAK_NAME = ADManagerRotation
 
 ADManagerRotation_FILES = Tweak.x
 ADManagerRotation_CFLAGS = -fobjc-arc
-ADManagerRotation_CODESIGN_FLAGS = -S/dev/null
+ADManagerRotation_CODESIGN = /usr/bin/true
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
