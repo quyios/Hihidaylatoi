@@ -18,9 +18,9 @@ echo "Injecting dylib..."
 # Compile insert_dylib if not present
 if [ ! -f "./insert_dylib" ]; then
     echo "Compiling insert_dylib from source..."
-    git clone https://github.com/Tyilo/insert_dylib.git
-    clang insert_dylib/insert_dylib/main.c -o insert_dylib
-    rm -rf insert_dylib
+    git clone https://github.com/Tyilo/insert_dylib.git insert_dylib_src
+    clang insert_dylib_src/insert_dylib/main.c -o insert_dylib
+    rm -rf insert_dylib_src
     chmod +x insert_dylib
 fi
 
