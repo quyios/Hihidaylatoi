@@ -1,6 +1,3 @@
-Oke cancel nhung man khong bam dc gi
-
-
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
