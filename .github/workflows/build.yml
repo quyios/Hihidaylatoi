@@ -26,10 +26,10 @@ jobs:
     - name: Build Tweak
       run: |
         make -j$(sysctl -n hw.ncpu)
+        cp ".theos/obj/$(grep 'TWEAK_NAME =' Makefile | cut -d' ' -f3).dylib" ./ADManagerRotation.dylib 2>/dev/null || cp ".theos/obj/debug/ADManagerRotation.dylib" ./ADManagerRotation.dylib
 
     - name: Patch IPA
       run: |
-        # Assume the user uploads ADManager.ipa to the root of the repo
         if [ -f "ADManager.ipa" ]; then
           chmod +x patch.sh
           ./patch.sh ADManager.ipa
