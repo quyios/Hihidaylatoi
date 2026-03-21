@@ -62,9 +62,10 @@ static NSString *findBundleID(id vc, UITableView *tv) {
 
 // ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
 static BOOL dismissSheetInView(UIView *view) {
-    // Detect UIActionSheet via selector (reliable), remove without triggering delegate (no UI freeze)
     if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
-        [view removeFromSuperview];
+        // Remove the container (superview) to clear sheet + background overlay
+        UIView *container = view.superview ?: view;
+        [container removeFromSuperview];
         return YES;
     }
     for (UIView *sub in view.subviews.copy)
