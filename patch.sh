@@ -31,6 +31,17 @@ fi
 echo "Copying dylib into app bundle..."
 cp "$DYLIB_NAME" "Payload/ADManager.app/"
 
+echo "Bundling ElleKit for TrollStore compatibility..."
+curl -L https://github.com/evelyneee/ElleKit/releases/latest/download/ElleKit.dylib -o ElleKit.dylib
+cp ElleKit.dylib "Payload/ADManager.app/"
+# Fix load commands to point to our local ElleKit instead of system substrate
+install_name_tool -change /usr/lib/libsubstrate.dylib @executable_path/ElleKit.dylib "Payload/ADManager.app/$DYLIB_NAME" || true
+install_name_tool -change /Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate @executable_path/ElleKit.dylib "Payload/ADManager.app/$DYLIB_NAME" || true
+
+# Sign everything inside the app bundle
+codesign -s - --force "Payload/ADManager.app/ElleKit.dylib"
+codesign -s - --force "Payload/ADManager.app/$DYLIB_NAME"
+
 echo "Repackaging IPA..."
 NEW_IPA="ADManager_Patched.ipa"
 zip -qr "$NEW_IPA" Payload
