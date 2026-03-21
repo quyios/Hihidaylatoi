@@ -60,18 +60,6 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
-// ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
-static BOOL dismissSheetInView(UIView *view) {
-    if ([view isKindOfClass:NSClassFromString(@"UIActionSheet")]) {
-        UIActionSheet *sheet = (UIActionSheet *)view;
-        [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
-        return YES;
-    }
-    for (UIView *sub in view.subviews) {
-        if (dismissSheetInView(sub)) return YES;
-    }
-    return NO;
-}
 
 
 
