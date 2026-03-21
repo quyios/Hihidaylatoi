@@ -98,23 +98,29 @@ static void adm_restoreNext(id self, SEL _cmd) {
     // Set selectedBackup on the VC (the VC uses this internally for restore)
     @try { [self setValue:chosen forKey:@"selectedBackup"]; } @catch (...) {}
 
-    // Dump methods to find correct restore trigger
-    unsigned int mc = 0;
-    Method *methods = class_copyMethodList([self class], &mc);
-    NSMutableArray *found = [NSMutableArray array];
-    for (unsigned i = 0; i < mc; i++) {
-        NSString *name = NSStringFromSelector(method_getName(methods[i]));
-        NSString *lower = name.lowercaseString;
-        if ([lower containsString:@"restore"] || [lower containsString:@"action"]
-            || [lower containsString:@"sheet"] || [lower containsString:@"select"]
-            || [lower containsString:@"backup"])
-            [found addObject:name];
+    // Set selected backup on VC (confirmed method: setSelectedBackup:)
+    SEL setSelSel = NSSelectorFromString(@"setSelectedBackup:");
+    if ([self respondsToSelector:setSelSel])
+        ((void(*)(id,SEL,id))objc_msgSend)(self, setSelSel, chosen);
+    else
+        @try { [self setValue:chosen forKey:@"selectedBackup"]; } @catch (...) {}
+
+    // Also set actionSheetItem (may be what restore reads)
+    SEL setItemSel = NSSelectorFromString(@"setActionSheetItem:");
+    if ([self respondsToSelector:setItemSel])
+        ((void(*)(id,SEL,id))objc_msgSend)(self, setItemSel, chosen);
+
+    // Call restore directly (confirmed method: restore)
+    SEL restoreSel = NSSelectorFromString(@"restore");
+    if ([self respondsToSelector:restoreSel]) {
+        popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@",
+            (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent]);
+        ((void(*)(id,SEL))objc_msgSend)(self, restoreSel);
+    } else {
+        popup(@"ADM ✗", @"'restore' method not found!");
     }
-    free(methods);
-    popup(@"ADM VC Methods", found.count
-          ? [found componentsJoinedByString:@"\n"]
-          : @"(no matching methods)");
 }
+
 
 
 // ---- Inject button ----
