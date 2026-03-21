@@ -60,19 +60,30 @@ static NSString *findBundleID(id vc, UITableView *tv) {
     return nil;
 }
 
-// ---- BFS search for UIActionSheet in window tree ----
-static UIActionSheet *findActionSheet(void) {
-    for (UIWindow *win in UIApplication.sharedApplication.windows) {
-        NSMutableArray *q = [NSMutableArray arrayWithObject:win];
-        while (q.count) {
-            UIView *v = q.firstObject; [q removeObjectAtIndex:0];
-            if ([v respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)])
-                return (UIActionSheet *)v;
-            [q addObjectsFromArray:v.subviews];
-        }
+// ---- Auto-dismiss UIActionSheet (recursive search across all windows) ----
+static BOOL dismissSheetInView(UIView *view) {
+    if ([view respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
+        UIActionSheet *sheet = (UIActionSheet *)view;
+        [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:YES];
+        return YES;
     }
-    return nil;
+    for (UIView *sub in view.subviews)
+        if (dismissSheetInView(sub)) return YES;
+    return NO;
 }
+
+static void dismissActionSheet(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        for (UIWindow *win in UIApplication.sharedApplication.windows)
+            if (dismissSheetInView(win)) return;
+        // Fallback: try dismissViewControllerAnimated on any presented VC
+        UIWindow *kw = UIApplication.sharedApplication.keyWindow;
+        UIViewController *top = kw.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
+        [top dismissViewControllerAnimated:YES completion:nil];
+    });
+}
+
 
 // ---- A-Z button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
@@ -95,9 +106,11 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
+    // Get table view
     UITableView *tv = nil;
     @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
 
+    // Find the row for chosen backup (table: newest→oldest, our array: oldest→newest)
     NSIndexPath *targetIP = nil;
     if (tv) {
         for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
@@ -118,29 +131,13 @@ static void adm_restoreNext(id self, SEL _cmd) {
     DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
     if (didSel) didSel(self, didSelSel, tv, targetIP);
 
-    // Flow: Dismiss first -> Reset UI -> Call restore
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIActionSheet *sheet = findActionSheet();
-        if (sheet) {
-            [sheet dismissWithClickedButtonIndex:sheet.cancelButtonIndex animated:NO];
-        }
-
-        // Wait for dismissal cleanup, then force-reset UI interaction state
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIApplication *app = [UIApplication sharedApplication];
-            while (app.isIgnoringInteractionEvents) {
-                [app endIgnoringInteractionEvents];
-            }
-            for (UIWindow *win in app.windows) {
-                win.userInteractionEnabled = YES;
-            }
-
-            // Finally, call the actual restore logic
-            SEL restoreSel = NSSelectorFromString(@"restore");
-            if ([(id)self respondsToSelector:restoreSel]) {
-                ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
-            }
-        });
+    // Call restore after action sheet is set up
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        SEL restoreSel = NSSelectorFromString(@"restore");
+        if ([(id)self respondsToSelector:restoreSel])
+            ((void(*)(id,SEL))objc_msgSend)((id)self, restoreSel);
+        // Dismiss the action sheet silently
+        dismissActionSheet();
     });
 }
 
@@ -196,4 +193,3 @@ static void ADMRotationInit(void) {
         if (m) { gOrigCellForRow = (CellForRowIMP)method_getImplementation(m); method_setImplementation(m, (IMP)adm_cellForRow); }
     }
 }
-
