@@ -1,4 +1,4 @@
-ARCHS = arm64 arm64e
+ARCHS = arm64
 TARGET := iphone:clang:latest:14.0
 INSTALL_TARGET_PROCESSES = ADManager
 
@@ -8,7 +8,6 @@ TWEAK_NAME = ADManagerRotation
 
 ADManagerRotation_FILES = Tweak.x
 ADManagerRotation_CFLAGS = -fobjc-arc
-ADManagerRotation_CODESIGN = /usr/bin/true
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
