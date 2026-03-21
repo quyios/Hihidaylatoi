@@ -26,7 +26,6 @@ static void popup(NSString *title, NSString *msg) {
     });
 }
 
-// ---- Sorted backups ----
 static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
     NSArray *all = [[NSFileManager defaultManager]
                     contentsOfDirectoryAtPath:@"/var/mobile/Library/ADManager" error:nil];
@@ -40,46 +39,67 @@ static NSArray<NSString *> *sortedBackups(NSString *bundleID) {
     return r;
 }
 
-// ---- Dump all ivar string values of an object ----
-static NSDictionary *ivarDump(id obj) {
-    if (!obj) return @{};
-    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+// Parse bundle ID from a file path like /…/com.example.app_123456.adbk
+static NSString *bundleFromPath(NSString *path) {
+    if (![path isKindOfClass:[NSString class]]) return nil;
+    NSString *fname = path.lastPathComponent;
+    if (![fname hasSuffix:@".adbk"]) return nil;
+    NSArray *parts = [fname componentsSeparatedByString:@"_"];
+    if (parts.count >= 2 && [parts[0] containsString:@"."]) return parts[0];
+    return nil;
+}
+
+// Find bundle ID from all known sources
+static NSString *findBundleID(id vc, id model, UITableView *tv) {
+    // 1. Standard key paths
+    for (NSString *k in @[@"bundleId",@"bundleID",@"appBundleId",@"bundleIdentifier",@"appId"]) {
+        @try { id v=[vc valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; } @catch(...){}
+        @try { id v=[model valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; } @catch(...){}
+    }
+
+    // 2. Try backupInfo — might be a string (bundle ID itself) or object
+    id backupInfo = nil;
+    @try { backupInfo = [vc valueForKey:@"backupInfo"]; } @catch (...) {}
+    if ([backupInfo isKindOfClass:[NSString class]] && [(NSString*)backupInfo containsString:@"."]) {
+        return (NSString *)backupInfo; // IS the bundle ID!
+    }
+    if (backupInfo) {
+        for (NSString *k in @[@"bundleId",@"bundleID",@"bundleIdentifier"]) {
+            @try { id v=[backupInfo valueForKey:k]; if([v isKindOfClass:[NSString class]])return v; } @catch(...){}
+        }
+    }
+
+    // 3. Try selectedBackup — might contain a file path
+    @try {
+        id sel = [vc valueForKey:@"selectedBackup"];
+        NSString *p = nil;
+        if ([sel isKindOfClass:[NSString class]]) p = sel;
+        else { @try { p = [sel valueForKey:@"path"]; } @catch (...) {} }
+        if (p) { NSString *bid = bundleFromPath(p); if (bid) return bid; }
+    } @catch (...) {}
+
+    // 4. Check ALL string ivars of vc for something that looks like a bundle ID (has dots)
     unsigned int n = 0;
-    Ivar *ivars = class_copyIvarList(object_getClass(obj), &n);
+    Ivar *ivars = class_copyIvarList(object_getClass(vc), &n);
     for (unsigned i = 0; i < n; i++) {
-        NSString *name = @(ivar_getName(ivars[i]) ?: "?");
-        NSString *stripped = [name hasPrefix:@"_"] ? [name substringFromIndex:1] : name;
+        NSString *iname = @(ivar_getName(ivars[i]) ?: "");
+        NSString *key = [iname hasPrefix:@"_"] ? [iname substringFromIndex:1] : iname;
         @try {
-            id val = [obj valueForKey:stripped];
-            if (val) d[name] = [NSString stringWithFormat:@"%@", val];
+            id val = [vc valueForKey:key];
+            if ([val isKindOfClass:[NSString class]]) {
+                NSString *s = (NSString *)val;
+                // Looks like a bundle ID: has 2+ dots, no spaces, reasonable length
+                if (s.length > 5 && [s containsString:@"."] && ![s containsString:@" "] &&
+                    [[s componentsSeparatedByString:@"."] count] >= 2) {
+                    free(ivars);
+                    return s;
+                }
+            }
         } @catch (...) {}
     }
     free(ivars);
-    return d;
-}
 
-// ---- Find bundle ID ----
-static NSString *findBundleID(id vc, id model, UITableView *tv) {
-    // 1. Try key paths on vc
-    for (NSString *k in @[@"bundleId",@"bundleID",@"appBundleId",@"bundleIdentifier",@"appId",@"appID"]) {
-        @try { id v=[vc valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; } @catch(...){}
-    }
-    // 2. Try via backupInfo sub-object
-    @try {
-        id info = [vc valueForKey:@"backupInfo"];
-        if (info) {
-            for (NSString *k in @[@"bundleId",@"bundleID",@"bundleIdentifier"]) {
-                @try { id v=[info valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; } @catch(...){}
-            }
-        }
-    } @catch (...) {}
-    // 3. Try key paths on model
-    if (model) {
-        for (NSString *k in @[@"bundleId",@"bundleID",@"appBundleId",@"bundleIdentifier"]) {
-            @try { id v=[model valueForKey:k]; if([v isKindOfClass:[NSString class]]&&[(NSString*)v length])return v; } @catch(...){}
-        }
-    }
-    // 4. Fallback: match table row count against .adbk file count per bundle ID
+    // 5. Count rows vs .adbk files per bundle ID
     if (tv) {
         NSInteger rows = [tv numberOfRowsInSection:0];
         if (rows > 0) {
@@ -91,46 +111,56 @@ static NSString *findBundleID(id vc, id model, UITableView *tv) {
                 NSString *bid = [[f componentsSeparatedByString:@"_"] firstObject];
                 if (bid) counts[bid] = @([counts[bid] integerValue] + 1);
             }
+            // Show candidates popup for debugging
+            NSMutableString *dbg = [NSMutableString stringWithFormat:@"Table rows: %ld\n\n", (long)rows];
+            NSString *match = nil;
             for (NSString *bid in counts) {
-                if ([counts[bid] integerValue] == rows) return bid;
+                int c = [counts[bid] intValue];
+                [dbg appendFormat:@"%@ → %d%@\n", bid, c, (c == rows ? @" ← MATCH" : @"")];
+                if (c == rows && !match) match = bid;
             }
-            // If no exact match, return the one with closest count
-            // but also show all in popup for debug
-            NSMutableString *dbg = [NSMutableString stringWithFormat:@"Table rows: %ld\n", (long)rows];
-            for (NSString *bid in counts)
-                [dbg appendFormat:@"%@ → %@\n", bid, counts[bid]];
             popup(@"ADM Bundle Candidates", dbg);
+            if (match) return match;
         }
     }
-    // 5. Last resort: dump VC ivars and show popup
-    NSDictionary *dump = ivarDump(vc);
-    NSMutableString *str = [NSMutableString string];
-    for (NSString *k in dump) [str appendFormat:@"%@=%@\n", k, dump[k]];
-    popup(@"ADM VC Ivars (debug)", str.length ? str : @"(empty)");
+
+    // 6. Last resort: show full ivar dump
+    NSMutableString *dump = [NSMutableString string];
+    unsigned int n2 = 0;
+    Ivar *ivars2 = class_copyIvarList(object_getClass(vc), &n2);
+    for (unsigned i = 0; i < n2; i++) {
+        NSString *iname = @(ivar_getName(ivars2[i]) ?: "");
+        NSString *key = [iname hasPrefix:@"_"] ? [iname substringFromIndex:1] : iname;
+        @try {
+            id val = [vc valueForKey:key];
+            if (val) [dump appendFormat:@"%@: [%@] %@\n", iname, NSStringFromClass([val class]),
+                      [[NSString stringWithFormat:@"%@",val] substringToIndex:MIN(50,[(NSString*)[NSString stringWithFormat:@"%@",val] length])]];
+        } @catch (...) {}
+    }
+    free(ivars2);
+    if (backupInfo) [dump appendFormat:@"\nbackupInfo: [%@] %@", NSStringFromClass([backupInfo class]), backupInfo];
+    popup(@"ADM VC Ivars (debug)", dump.length ? dump : @"(empty)");
     return nil;
 }
 
-// ---- Button tap ----
 static void adm_restoreNext(id self, SEL _cmd) {
     NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
     id model = nil;
     @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
-
     if (!bundleID) {
         UITableView *tv = nil;
         @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
         bundleID = findBundleID(self, model, tv);
     }
-    if (!bundleID) { popup(@"ADM ✗", @"Không tìm được Bundle ID!\nXem popup VC Ivars để debug."); return; }
+    if (!bundleID) return;
     objc_setAssociatedObject(self, kBundleKey, bundleID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     NSArray<NSString *> *backups = sortedBackups(bundleID);
-    if (!backups.count) { popup(@"ADM ✗", [NSString stringWithFormat:@"Không có backup cho:\n%@", bundleID]); return; }
+    if (!backups.count) { popup(@"ADM ✗", [NSString stringWithFormat:@"0 backup cho:\n%@", bundleID]); return; }
 
     NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
     NSInteger idx = idxN ? idxN.integerValue : 0;
     if (idx >= (NSInteger)backups.count) idx = 0;
-
     NSString *chosen = backups[(NSUInteger)idx];
     NSInteger next = (idx + 1) % (NSInteger)backups.count;
     objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -140,7 +170,7 @@ static void adm_restoreNext(id self, SEL _cmd) {
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
 
-    popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@\nBundle: %@",
+    popup(@"ADM Restoring ✓", [NSString stringWithFormat:@"#%ld/%lu\n%@\n%@",
         (long)(idx+1), (unsigned long)backups.count, chosen.lastPathComponent, bundleID]);
 
     if (model && [model respondsToSelector:gRestoreSel])
@@ -149,10 +179,8 @@ static void adm_restoreNext(id self, SEL _cmd) {
         ((RestoreIMP)objc_msgSend)(self, gRestoreSel, bundleID, chosen, nil, nil);
 }
 
-// ---- Inject button ----
 static void injectButton(id self, UITableView *tv) {
     if (objc_getAssociatedObject(self, kBtnKey)) return;
-
     id model = nil;
     @try { model = [self valueForKey:@"backupList"]; } @catch (...) {}
     NSString *bundleID = findBundleID(self, model, tv);
@@ -161,18 +189,14 @@ static void injectButton(id self, UITableView *tv) {
         NSInteger s = [[NSUserDefaults standardUserDefaults] integerForKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
         objc_setAssociatedObject(self, kIdxKey, @(s), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-
     NSNumber *n = objc_getAssociatedObject(self, kIdxKey) ?: @0;
     NSString *title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(n.integerValue+1)];
     SEL actionSel = @selector(adm_restoreNext);
     if (![self respondsToSelector:actionSel])
         class_addMethod([self class], actionSel, (IMP)adm_restoreNext, "v@:");
-
-    UIBarButtonItem *btn = [[UIBarButtonItem alloc] initWithTitle:title
-                                                           style:UIBarButtonItemStylePlain
+    UIBarButtonItem *btn = [[UIBarButtonItem alloc] initWithTitle:title style:UIBarButtonItemStylePlain
                                                           target:self action:actionSel];
     objc_setAssociatedObject(self, kBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
     UINavigationItem *nav = [(UIViewController *)self navigationItem];
     NSMutableArray *items = [NSMutableArray arrayWithArray:nav.rightBarButtonItems ?: @[]];
     [items filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(UIBarButtonItem *b, id _) {
@@ -182,22 +206,20 @@ static void injectButton(id self, UITableView *tv) {
     nav.rightBarButtonItems = items;
 }
 
-// ---- cellForRowAtIndexPath: hook ----
 static UITableViewCell *adm_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
     UITableViewCell *cell = gOrigCellForRow ? gOrigCellForRow(self, _cmd, tv, ip) : nil;
     if (!objc_getAssociatedObject(self, kBtnKey)) injectButton(self, tv);
     return cell;
 }
 
-// ---- Constructor ----
 __attribute__((constructor))
 static void ADMRotationInit(void) {
     @autoreleasepool {
         gRestoreSel = @selector(restoreApp:fromPathBackup:progress:withCompletion:);
         Class vcClass = NSClassFromString(@"BackupInfoTableViewController");
         if (!vcClass) {
-            unsigned int count = 0; Class *cls = objc_copyClassList(&count);
-            for (unsigned i = 0; i < count; i++)
+            unsigned int c = 0; Class *cls = objc_copyClassList(&c);
+            for (unsigned i = 0; i < c; i++)
                 if (class_getInstanceMethod(cls[i], NSSelectorFromString(@"setSelectedBackup:")) &&
                     class_getInstanceMethod(cls[i], NSSelectorFromString(@"setBackupList:")))
                     { vcClass = cls[i]; break; }
