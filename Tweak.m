@@ -109,36 +109,57 @@ static void dismissActionSheet(void) {
 static void adm_restoreNext(id self, SEL _cmd) {
     NSString *bundleID = objc_getAssociatedObject(self, kBundleKey);
     if (!bundleID) return;
-
     NSArray<NSString *> *backups = sortedBackups(bundleID);
     if (!backups.count) return;
-
-    NSInteger idx = [objc_getAssociatedObject(self, kIdxKey) integerValue];
-    if (idx >= backups.count) idx = 0;
-
-    NSInteger realIndex = backups.count - 1 - idx;
-    NSString *chosen = backups[realIndex];
-
-    NSInteger next = (idx + 1) % backups.count;
+    NSNumber *idxN = objc_getAssociatedObject(self, kIdxKey);
+    NSInteger idx = idxN ? idxN.integerValue : 0;
+    if (idx >= (NSInteger)backups.count) idx = 0;
+    NSInteger next = (idx + 1) % (NSInteger)backups.count;
     objc_setAssociatedObject(self, kIdxKey, @(next), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    [[NSUserDefaults standardUserDefaults] setInteger:next
-                                               forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
-
+    [[NSUserDefaults standardUserDefaults] setInteger:next forKey:[@"ADMIdx_" stringByAppendingString:bundleID]];
+    [[NSUserDefaults standardUserDefaults] synchronize];
     UIBarButtonItem *btn = objc_getAssociatedObject(self, kBtnKey);
     if (btn) btn.title = [NSString stringWithFormat:@"Restore A-Z (%ld)", (long)(next+1)];
-
-    // ✅ setSelectedBackup (KHÔNG qua UI)
-    SEL setSel = NSSelectorFromString(@"setSelectedBackup:");
-    if ([self respondsToSelector:setSel]) {
-        ((void(*)(id,SEL,id))objc_msgSend)(self, setSel, chosen);
+    UITableView *tv = nil;
+    @try { tv = [self valueForKey:@"tableView"]; } @catch (...) {}
+    NSIndexPath *targetIP = nil;
+    if (tv) {
+        for (NSInteger s = 0; s < [tv numberOfSections]; s++) {
+            NSInteger rows = [tv numberOfRowsInSection:s];
+            if (rows == (NSInteger)backups.count) {
+                NSInteger row = (NSInteger)backups.count - 1 - idx;
+                if (row >= 0 && row < rows)
+                    targetIP = [NSIndexPath indexPathForRow:row inSection:s];
+                break;
+            }
+        }
     }
-
-    // ✅ gọi restore trực tiếp
-    SEL restoreSel = NSSelectorFromString(@"restore");
-    if ([self respondsToSelector:restoreSel]) {
-        ((void(*)(id,SEL))objc_msgSend)(self, restoreSel);
-    }
+    if (!targetIP) return;
+    // Simulate row tap → VC sets actionSheetItem + shows UIActionSheet
+    typedef void (*DidSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
+    SEL didSelSel = @selector(tableView:didSelectRowAtIndexPath:);
+    DidSelectIMP didSel = (DidSelectIMP)[[self class] instanceMethodForSelector:didSelSel];
+    if (didSel) didSel(self, didSelSel, tv, targetIP);
+    // Wait for the action sheet and "click" the Restore button (index 3)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIActionSheet *sheet = nil;
+        for (UIWindow *win in UIApplication.sharedApplication.windows) {
+            NSMutableArray *q = [NSMutableArray arrayWithObject:win];
+            while (q.count) {
+                UIView *v = q.firstObject; [q removeObjectAtIndex:0];
+                if ([v respondsToSelector:@selector(dismissWithClickedButtonIndex:animated:)]) {
+                    sheet = (UIActionSheet *)v; break;
+                }
+                [q addObjectsFromArray:v.subviews];
+            }
+            if (sheet) break;
+        }
+        
+        if (sheet) {
+            // Index 3 is "Restore AppData" - this triggers the native delegate and restore flow
+            [sheet dismissWithClickedButtonIndex:3 animated:YES];
+        }
+    });
 }
 
 // ---- Inject button ----
