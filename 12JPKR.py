@@ -14,8 +14,8 @@ from datetime import datetime
 
 PORT = 1080
 
-TG_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TG_CHAT_ID = "YOUR_CHAT_ID"
+TG_BOT_TOKEN="8659116891:AAHUe8QGMcUnQuNCQTRPV0Is_YWzfugI_JE"
+TG_CHAT_ID="-5098469093"
 
 API_BASE = f"https://api.telegram.org/bot{TG_BOT_TOKEN}"
 
